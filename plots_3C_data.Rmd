@@ -1,0 +1,586 @@
+---
+title: "My Report"
+author: "Mikael Dunn"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: bootstrap
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    mathjax: "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"
+    section_divs: true
+    self_contained: true
+---
+
+This R Markdown document performs a complete cis/trans analysis across locations, batches, and timepoints. It produces -tables, 2D plots, interactive 3D plots, PCA visualizations, and heatmaps, with each section clearly described.
+
+## 0. Setup and packages
+
+Purpose- Load required packages and define global chunk behavior.
+
+```{r load-packages}
+library(tidyverse)
+library(ggplot2)
+library(plotly)
+library(ggrepel)
+library(pheatmap)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+## 1. Read and combine all CSV files
+
+Import all `_summary.csv` files and attach experimental metadata extracted from filenames
+
+```{r import-csv}
+folder <- "C:\\Users\\dunnmk\\Downloads\\C_summary"
+files  <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
+
+raw_list <- lapply(files, read_csv)
+
+add_meta <- function(df, fname) {
+base <- basename(fname)
+
+df %>%
+mutate(
+  batch     = str_extract(base, "batch\\d+"),
+  time      = str_extract(base, "T\\d+"),
+  condition = ifelse(str_detect(base, "3C"), "3C", "no3C")
+)
+}
+
+dat <- purrr::map2_dfr(raw_list, files, add_meta)
+
+dat |> head(10) |> knitr::kable(caption = "Preview of combined dataset")
+```
+
+## 2. Extract genomic location
+
+-Purpose- Parse genomic location from `alignment_name`.
+
+```{r extract-location}
+dat <- dat %>%
+mutate(location = str_extract(alignment_name, "Chr[^,]+"))
+```
+
+## 3. Batch-level cis/trans and combo percentages
+
+-Purpose- Compute total counts, cis/trans counts, combo counts, and percentages per batch × time × condition.
+
+```{r cistrans-combo-percentages}
+dat <- dat %>%
+group_by(batch, time, condition) %>%
+mutate(
+  Total_Counts = sum(count, na.rm = TRUE),
+  Cis_Counts = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+  Trans_Counts = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
+
+A_to_B_Counts = sum(count[combo == "A_to_B"], na.rm = TRUE),
+C_to_D_Counts = sum(count[combo == "C_to_D"], na.rm = TRUE),
+A_to_D_Counts = sum(count[combo == "A_to_D"], na.rm = TRUE),
+C_to_B_Counts = sum(count[combo == "C_to_B"], na.rm = TRUE),
+
+Percent_Cis = 100 * Cis_Counts / Total_Counts,
+Percent_Trans = 100 * Trans_Counts / Total_Counts
+
+) %>%
+ungroup()
+
+```
+
+## 4. Per-location cis/trans normalization
+
+-Purpose- Normalize cis/trans counts by location within each experimental group.
+
+```{r per-loc-normalization}
+dat <- dat %>%
+group_by(batch, time, condition, location) %>%
+mutate(
+  Cis_Location_Counts = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+  Trans_Location_Counts = sum(count[cis_trans == "TRANS"], na.rm = TRUE)
+  ) %>%
+group_by(batch, time, condition) %>%
+mutate(
+  Total_Cis_Location_Counts = sum(Cis_Location_Counts, na.rm = TRUE),
+  Total_Trans_Location_Counts = sum(Trans_Location_Counts, na.rm = TRUE),
+  Percent_Location_in_Cis = 100 * Cis_Location_Counts / Total_Cis_Location_Counts,
+  Percent_Location_in_Trans = 100 * Trans_Location_Counts / Total_Trans_Location_Counts
+) %>%
+ungroup()
+
+```
+## 4.5 DSB Normalization
+
+```{r dsb-norm}
+# STEP 1: Diagnostic - show locations by combo
+cat("LOCATIONS BY COMBO:\n")
+dat %>%
+group_by(combo, location) %>%
+summarise(total_count = sum(count, na.rm = TRUE), .groups = "drop") %>%
+arrange(combo, desc(total_count)) %>%
+print(n = 30)
+
+# STEP 2: UPDATE these with your actual DSB locations from Step 1
+combo_dsb_map <- list(
+  "A_to_B" = c("UPDATE_DSB1_A", "UPDATE_DSB2_B"),
+  "C_to_D" = c("UPDATE_DSB1_C", "UPDATE_DSB2_D"),
+  "A_to_D" = c("UPDATE_DSB1_A", "UPDATE_DSB2_D"),
+  "C_to_B" = c("UPDATE_DSB1_C", "UPDATE_DSB2_B"),
+  "DSB2_CIS" = c("UPDATE_DSB2", "UPDATE_DSB2")
+)
+
+uncuttable_pattern <- "uncuttable|control|noncut"
+
+# STEP 3: Safe DSB normalization with list-columns + rowwise
+dat <- dat %>%
+mutate(
+  DSB1_loc = case_when(
+  combo == "A_to_B" ~ list(combo_dsb_map$A_to_B),
+  combo == "C_to_D" ~ list(combo_dsb_map$C_to_D),
+  combo == "A_to_D" ~ list(combo_dsb_map$A_to_D),
+  combo == "C_to_B" ~ list(combo_dsb_map$C_to_B),
+  TRUE ~ list(NA_character_)
+),
+DSB2_loc = case_when(
+  combo == "A_to_B" ~ list(combo_dsb_map$A_to_B),
+  combo == "C_to_D" ~ list(combo_dsb_map$C_to_D),
+  combo == "A_to_D" ~ list(combo_dsb_map$A_to_D),
+  combo == "C_to_B" ~ list(combo_dsb_map$C_to_B),
+  combo == "DSB2_CIS" ~ list(combo_dsb_map$DSB2_CIS),
+  TRUE ~ list(NA_character_)
+)
+) %>%
+rowwise() %>%
+mutate(
+  DSB1_Counts = sum(count[location %in% DSB1_loc], na.rm = TRUE),
+  DSB2_Counts = sum(count[location %in% DSB2_loc], na.rm = TRUE),
+  Uncuttable_Counts = sum(count[stringr::str_detect(location, uncuttable_pattern)], na.rm = TRUE),
+  
+  Total_DSB_Efficiency = pmax(DSB1_Counts + DSB2_Counts + Uncuttable_Counts, 1),
+  DSB_Norm_Frequency = count / Total_DSB_Efficiency,
+  
+  DSB_Norm_Allele = case_when(
+    combo == "DSB2_CIS" ~ count / pmax(DSB2_Counts, 1),
+    TRUE ~ DSB_Norm_Frequency
+)
+
+) %>%
+ungroup() %>%
+select(-DSB1_loc, -DSB2_loc)
+
+# Validation plot: DSB2 Efficiency by Combo
+df_val <- dat %>%
+  filter(combo %in% c("A_to_D", "C_to_B", "DSB2_CIS")) %>%
+  group_by(batch, time, combo) %>%
+  summarise(DSB2_Counts = sum(DSB2_Counts, na.rm = TRUE), .groups = "drop")
+
+if(nrow(df_val) > 0) {
+  ggplot(df_val, aes(x = batch, y = DSB2_Counts, fill = combo)) +
+    geom_col(position = "dodge") +
+    facet_wrap(~ time) +
+    labs(title = "DSB2 Efficiency by Combo", x = "Batch", y = "DSB2 Counts") +
+    theme_bw()
+}
+
+```
+## 5. Bar plot- percent in cis by location
+
+-Purpose- Visualize cis enrichment per location, faceted by batch.
+
+```{r loc-bar}
+# Cis plot
+if(nrow(dat) > 0) {
+  ggplot(dat, aes(x = location, y = Percent_Location_in_Cis)) +
+  geom_col() +
+  facet_wrap(~ batch, scales = "free_x") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Percent in cis by location", x = "Location", y = "Percent in cis")
+}
+
+# TRANS percent plots (CORRECT)
+trans_combos <- c("A_to_D", "C_to_B")
+
+for (cmb in trans_combos) {
+
+  df_plot <- dat %>%
+    filter(combo == cmb) %>%
+    group_by(batch, time, location) %>%
+    summarise(
+      Percent_Location_in_Trans = unique(Percent_Location_in_Trans),
+      .groups = "drop"
+    )
+
+  if (nrow(df_plot) > 0) {
+    ggplot(df_plot,
+           aes(x = location, y = Percent_Location_in_Trans)) +
+      geom_col(fill = "steelblue") +
+      facet_grid(time ~ batch, scales = "free_x") +
+      theme_bw() +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+      labs(
+        title = paste("Percent in TRANS by Location:", cmb),
+        x = "Location",
+        y = "Percent of TRANS"
+      )
+  }
+}
+
+# DSB2_CIS special case
+df_cis <- dat %>% filter(combo == "DSB2_CIS")
+if(nrow(df_cis) > 0) {
+  ggplot(df_cis,
+         aes(x = location, y = DSB_Norm_Allele)) +
+    geom_col(fill = "darkgreen") +
+    facet_wrap(~ batch, scales = "free_x") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    labs(title = "DSB2_CIS Normalized", x = "Location", y = "DSB2-Norm Freq")
+}
+
+# Comparison plot
+dat_long <- dat %>%
+  filter(combo %in% c("A_to_D", "C_to_B")) %>%
+  select(batch, location, combo, Percent_Location_in_Trans, DSB_Norm_Frequency) %>%
+  pivot_longer(cols = c(Percent_Location_in_Trans, DSB_Norm_Frequency),
+               names_to = "Method", values_to = "Value") %>%
+  mutate(Method = recode(Method,
+                         "Percent_Location_in_Trans" = "Percent Trans",
+                         "DSB_Norm_Frequency" = "DSB-Norm"))
+
+if(nrow(dat_long) > 0) {
+  ggplot(dat_long, aes(x = location, y = Value, fill = Method)) +
+    geom_col(position = "dodge") +
+    facet_grid(combo ~ batch, scales = "free_x") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    labs(title = "Trans Comparison by Combo", x = "Location", y = "Value")
+}
+```
+
+## 5.5 Normalized DSB Plots
+```{r dsb-norm-plots}
+
+
+## ---- DSB efficiency computed ONCE at group level ----------
+dsb_efficiency <- dat %>%
+  filter(combo %in% c("A_to_D", "C_to_B", "DSB2_CIS")) %>%
+  group_by(batch, time, combo) %>%
+  summarise(
+    DSB_Efficiency = sum(
+      count[
+        location %in% unlist(combo_dsb_map[[unique(combo)]])
+      ],
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+## ---- attach efficiency back to main data ------------------
+dat_dsb <- dat %>%
+  left_join(dsb_efficiency,
+            by = c("batch", "time", "combo")) %>%
+  mutate(
+    DSB_Efficiency = pmax(DSB_Efficiency, 1),
+
+    ## DSB-normalized TRANS percent
+    Percent_Trans_DSB_Norm =
+      Percent_Location_in_Trans / DSB_Efficiency
+  )
+
+## A) DSB-NORMALIZED TRANS BY LOCATION (MAIN RESULT)
+
+trans_combos <- c("A_to_D", "C_to_B")
+
+for (cmb in trans_combos) {
+
+  df_plot <- dat_dsb %>%
+    filter(combo == cmb) %>%
+    group_by(batch, time, location) %>%
+    summarise(
+      Percent_Trans_DSB_Norm = unique(Percent_Trans_DSB_Norm),
+      .groups = "drop"
+    )
+
+  if (nrow(df_plot) > 0) {
+    print(
+      ggplot(df_plot,
+             aes(x = location,
+                 y = Percent_Trans_DSB_Norm)) +
+        geom_col(fill = "firebrick") +
+        facet_grid(time ~ batch, scales = "free_x") +
+        theme_bw() +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+        labs(
+          title = paste("DSB-Normalized Percent in TRANS:", cmb),
+          x = "Location",
+          y = "Percent in TRANS (DSB-normalized)"
+        )
+    )
+  }
+}
+
+## B) RAW vs DSB-NORMALIZED TRANS COMPARISON
+
+df_compare <- dat_dsb %>%
+  filter(combo %in% c("A_to_D", "C_to_B")) %>%
+  group_by(batch, time, combo, location) %>%
+  summarise(
+    Raw_Trans = unique(Percent_Location_in_Trans),
+    DSB_Norm_Trans = unique(Percent_Trans_DSB_Norm),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(Raw_Trans, DSB_Norm_Trans),
+    names_to = "Method",
+    values_to = "Value"
+  )
+
+if (nrow(df_compare) > 0) {
+  ggplot(df_compare,
+         aes(x = location,
+             y = Value,
+             fill = Method)) +
+    geom_col(position = "dodge") +
+    facet_grid(combo ~ batch, scales = "free_x") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    labs(
+      title = "TRANS Percent: Raw vs DSB-Normalized",
+      x = "Location",
+      y = "Percent in TRANS"
+    )
+}
+
+
+## C) DSB2 EFFICIENCY BY COMBO (FIXED, NEVER BLANK)
+
+
+if (nrow(dsb_efficiency) > 0) {
+  ggplot(dsb_efficiency,
+         aes(x = batch,
+             y = DSB_Efficiency,
+             fill = combo)) +
+    geom_col(position = "dodge") +
+    facet_wrap(~ time) +
+    theme_bw() +
+    labs(
+      title = "DSB2 Efficiency by Combo",
+      x = "Batch",
+      y = "DSB2 Counts"
+    )
+}
+
+
+```
+## 6. Overall location summary table
+
+-Purpose- Collapse across batches to obtain overall cis/trans percentages per location.
+```{r loc-summary-table}
+loc_overall <- dat %>%
+group_by(location) %>%
+summarise(
+  Cis_Location_Counts_overall   = sum(Cis_Location_Counts,   na.rm = TRUE),
+  Trans_Location_Counts_overall = sum(Trans_Location_Counts, na.rm = TRUE),
+  Total_Location_Counts_overall = Cis_Location_Counts_overall + Trans_Location_Counts_overall,
+  Percent_Location_in_Cis_overall   = 100 * Cis_Location_Counts_overall   / Total_Location_Counts_overall,
+  Percent_Location_in_Trans_overall = 100 * Trans_Location_Counts_overall / Total_Location_Counts_overall,
+  .groups = "drop"
+)
+
+loc_overall |> knitr::kable(caption = "Overall cis/trans percentages by location")
+```
+
+## 7. Correlation between cis and trans (overall)
+
+-Purpose- Assess correlation between cis and trans percentages across locations.
+```{r cistrans-correlation-p}
+cor_res <- cor.test(
+loc_overall$Percent_Location_in_Cis_overall,
+loc_overall$Percent_Location_in_Trans_overall
+)
+
+label_text <- paste0(
+"R = ", round(unname(cor_res$estimate), 2),
+"\nP = ", signif(cor_res$p.value, 2)
+)
+
+ggplot(loc_overall,
+aes(x = Percent_Location_in_Cis_overall,
+y = Percent_Location_in_Trans_overall,
+label = location)) +
+geom_point() +
+geom_smooth(method = "lm", se = FALSE, color = "red") +
+geom_text_repel(size = 3) +
+annotate("text", x = Inf, y = Inf,
+label = label_text,
+hjust = 1.1, vjust = 1.1) +
+theme_bw() +
+labs(
+title = "Correlation of cis vs trans percentages by location",
+x = "Percent in cis",
+y = "Percent in trans"
+)
+```
+
+## 7.5 Fold Changes across Batches
+-Purpose- Calculate fold changes across batches of experiments and between T120/T0
+```{r fold-changes}
+
+#Percent batch/time
+
+dat_pct_loc_bt <- dat %>%
+group_by(batch, time) %>%
+mutate(Total_Counts_bt = sum(count, na.rm = TRUE),
+Percent_at_Location = 100 * count / Total_Counts_bt) %>%
+ungroup()
+
+#Fold change per batch- T120/T0
+
+fc_bt <- dat_pct_loc_bt %>%
+group_by(batch, allele, time) %>%
+summarise(Percent_at_Location = sum(Percent_at_Location, na.rm = TRUE), .groups = "drop") %>%
+pivot_wider(names_from = time, values_from = Percent_at_Location) %>%
+mutate(fold_change = T120 / T0)
+
+# Fold-change plot - SEPARATE SECTIONS PER BATCH (like attached style)
+p_fc_batch <- ggplot(fc_bt, aes(x = allele, y = fold_change, fill = batch)) +
+  geom_col(position = "dodge", width = 0.8) +
+  geom_text(aes(label = round(fold_change, 2)), 
+            position = position_dodge(width = 0.8), vjust = -0.4, size = 2.5) +
+  facet_grid(batch ~ ., scales = "free_y", space = "free_x") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        strip.text = element_text(size = 12, face = "bold"),
+        plot.margin = margin(t = 80, r = 10, b = 10, l = 10)) +
+  labs(title = "Fold Change per Allele (T120/T0), by Batch",
+       x = "Location (Allele)", y = "Fold Change") +
+  scale_fill_brewer(palette = "Set2") +
+  coord_cartesian(ylim = c(0, max(fc_bt$fold_change, na.rm = TRUE) * 1.2))  # AUTO-FIT y-axis to data + 20% headroom
+
+ggsave("fc_batch_faceted.png", p_fc_batch, width = 18, height = 16, dpi = 300)  # Even taller
+p_fc_batch
+
+
+
+
+
+```
+
+## 8. PCA of locations (overall)
+
+-Purpose- Cluster locations using cis%, trans%, and total counts.
+```{r loc-pca}
+loc_features <- loc_overall %>%
+mutate(log_total = log10(Total_Location_Counts_overall + 1)) %>%
+select(Percent_Location_in_Cis_overall,
+Percent_Location_in_Trans_overall,
+log_total)
+
+pca_res <- prcomp(loc_features, scale. = TRUE)
+loc_pca <- as.data.frame(pca_res$x) %>% bind_cols(loc_overall %>% select(location))
+
+ggplot(loc_pca, aes(x = PC1, y = PC2, label = location)) +
+geom_point(size = 2) +
+geom_text(vjust = -0.5, size = 3) +
+labs(title = "PCA of Locations (Cis/Trans + Total Counts)",
+x = "PC1", y = "PC2")
+
+```
+
+## 9. Interactive 3D PCA
+
+-Purpose- Visualize location clustering in three dimensions.
+
+```{r 3D-pca}
+plot_ly(
+  loc_pca,
+  x = ~PC1,
+  y = ~PC2,
+  z = ~PC3,
+  type = "scatter3d",
+  mode = "markers+text",
+  text = ~location
+)
+
+```
+
+## 10. Heatmap of allele fold-change correlations
+
+-Purpose- Identify correlated alleles based on fold-change profiles.
+
+-assumes cor_alleles already computed
+
+```{r heatmap}
+
+# 1) Percent of total reads at each allele within each batch × time
+dat_pct_loc_bt <- dat %>%
+  group_by(batch, time) %>%
+  mutate(
+    Total_Counts_bt     = sum(count, na.rm = TRUE),
+    Percent_at_Location = 100 * count / Total_Counts_bt
+  ) %>%
+  ungroup()
+
+# 2) Fold change per allele per batch: T120 / T0 of Percent_at_Location
+fc_bt <- dat_pct_loc_bt %>%
+  group_by(batch, allele, time) %>%
+  summarise(Percent_at_Location = sum(Percent_at_Location, na.rm = TRUE),
+            .groups = "drop") %>%
+  tidyr::pivot_wider(
+    names_from  = time,
+    values_from = Percent_at_Location
+  ) %>%
+  mutate(
+    fold_change = `T120` / `T0`
+  )
+
+# 3) Matrix: rows = batches, columns = alleles, values = fold_change
+fc_mat_bt <- fc_bt %>%
+  select(batch, allele, fold_change) %>%
+  tidyr::pivot_wider(
+    names_from  = allele,
+    values_from = fold_change
+  )
+
+# 4) Clean matrix: remove batch column, drop bad/constant columns
+fc_mat_clean <- fc_mat_bt %>%
+  select(-batch)
+
+# keep columns with at least 2 non‑NA and non‑zero variance
+fc_mat_clean <- fc_mat_clean %>%
+  select(where(~ sum(!is.na(.x)) > 1))
+
+keep_cols <- sapply(fc_mat_clean, function(x) {
+  v <- var(x, na.rm = TRUE)
+  !is.na(v) && v > 0
+})
+
+fc_mat_clean <- fc_mat_clean[, keep_cols, drop = FALSE]
+
+# 5) Correlation between alleles based on fold‑change profiles
+cor_alleles_fc <- cor(as.matrix(fc_mat_clean), use = "pairwise.complete.obs")
+cor_alleles_fc[!is.finite(cor_alleles_fc)] <- 0
+
+# 6) Heatmap: proximity in fold‑change space
+pheatmap(
+  cor_alleles_fc,
+  main = "Proximity heatmap of alleles based on fold changes"
+)
+
+```
+
+## 11. Summary
+
+This document integrates-
+
+- Tabular summaries of cis/trans distributions
+- Batch- and time-aware normalization
+- Correlation analysis
+- PCA (2D and 3D)
+- Heatmap-based clustering
+
+The structure is intentionally modular so sections can be reused or removed without breaking the document.

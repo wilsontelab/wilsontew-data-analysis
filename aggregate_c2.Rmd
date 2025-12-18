@@ -1,0 +1,211 @@
+---
+title: "CSV Summary Analysis"
+output: html_document
+---
+
+This R Markdown document reads, combines, and summarizes multiple `_summary.csv` files.
+
+-Conventions used in this document
+
+-[DESCRIBE CODE AND VARIABLES] blocks explain what the code is doing and define key variables.
+-[OUTPUT]- blocks describe or annotate the expected output from a code chunk.
+
+---
+## 0. Packages
+
+-[DESCRIBE CODE AND VARIABLES]-
+
+ -tidyverse- Provides `dplyr`, `readr`, `purrr`, `stringr`, and `ggplot2`, which are used throughout this analysis for data import, manipulation, and summarization.
+```{r setup, message=FALSE}
+
+
+library(tidyverse)
+```
+---
+
+## 1. Read and combine ALL CSVs
+
+-[DESCRIBE CODE AND VARIABLES]-
+
+ -folder- Path to the directory containing all summary CSV files.
+ -files- Vector of file paths matching the `_summary.csv` naming pattern.
+ -raw_list- List of data frames, one per CSV file.
+```
+```{r read-csvs}
+folder <- "C:/Users/dunnmk/Downloads/C_summary"   # adjust as needed
+files  <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
+
+raw_list <- lapply(files, read_csv)
+```
+Display column names from the first imported CSV
+
+-[OUTPUT]-
+```{r show-csvs, results="asis"}
+raw_list[[1]] |>
+  colnames() |>
+  tibble(Column = _) |>
+  knitr::kable(caption = "Column names from first CSV")
+```
+---
+
+## 2. Add metadata from filenames
+
+-[DESCRIBE CODE AND VARIABLES]-
+
+ -add_meta()- Extracts experimental metadata from filenames.
+ -batch- Experimental batch identifier (e.g., `batch1`).
+ -time- Time point identifier (e.g., `T0`, `T120`).
+ -condition- Experimental condition inferred from filename (`3C` or `no3C`).
+
+```{r add-metadata}
+
+add_meta <- function(df, fname) {
+  base <- basename(fname)
+  
+  batch     <- stringr::str_extract(base, "batch\\d+")
+  time      <- stringr::str_extract(base, "T\\d+")
+  condition <- ifelse(stringr::str_detect(base, "_3C_"), "3C", "no3C")
+  
+  df %>%
+    mutate(
+      batch     = batch,
+      time      = time,
+      condition = condition
+    )
+}
+
+dat <- purrr::map2_dfr(raw_list, files, add_meta)
+```
+Preview data after metadata columns are added
+
+-[OUTPUT]-
+```{r show-metadata}
+dat |> head(10) |> knitr::kable(caption = "Data preview after metadata")
+```
+---
+
+## 3. Aggregate counts and percentages
+
+-[DESCRIBE CODE AND VARIABLES]-
+
+This section computes total counts and percentage-based summaries across experimental groups.
+
+-Key variables created-
+
+ -Total_Counts- Total read/observation count per batch–time–condition.
+ -Cis_Counts-, -Trans_Counts-: Counts split by cis/trans classification.
+ -A_to_B_Counts-, -C_to_D_Counts-, -A_to_D_Counts-, -C_to_B_Counts- Counts for specific allele combinations.
+ -Percent_- Percentage of each category relative to `Total_Counts`.
+```{r aggregate-counts}
+
+dat <- dat %>%
+  group_by(batch, time, condition) %>%
+  mutate(
+    Total_Counts = sum(count, na.rm = TRUE),
+    
+    Cis_Counts   = sum(count[cis_trans == "CIS"],   na.rm = TRUE),
+    Trans_Counts = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
+    
+    A_to_B_Counts = sum(count[combo == "A_to_B"], na.rm = TRUE),
+    C_to_D_Counts = sum(count[combo == "C_to_D"], na.rm = TRUE),
+    A_to_D_Counts = sum(count[combo == "A_to_D"], na.rm = TRUE),
+    C_to_B_Counts = sum(count[combo == "C_to_B"], na.rm = TRUE),
+    
+    Percent_Cis   = 100 * Cis_Counts   / Total_Counts,
+    Percent_Trans = 100 * Trans_Counts / Total_Counts,
+    
+    Percent_A_to_B = 100 * A_to_B_Counts / Total_Counts,
+    Percent_C_to_D = 100 * C_to_D_Counts / Total_Counts,
+    Percent_A_to_D = 100 * A_to_D_Counts / Total_Counts,
+    Percent_C_to_B = 100 * C_to_B_Counts / Total_Counts
+  ) %>%
+  ungroup()
+
+```
+Print data after aggregation and new columns
+
+-[OUTPUT]-
+```{r show-aggregate-counts}
+dat |> head(10) |> knitr::kable(caption = "Data after aggregation")
+```{r print-aggregated, results="asis"}
+knitr::kable(
+  dat %>% distinct(batch, time, condition, Total_Counts, Cis_Counts, Trans_Counts),
+  caption = "Aggregated counts by group"
+)
+
+
+```
+---
+
+## 4. Cis vs Trans location normalization
+
+-[DESCRIBE CODE AND VARIABLES]-
+
+This section normalizes cis and trans counts by allele and then across experimental groups.
+
+-Key variables created-
+
+ -Cis_Location_Counts- Cis counts per allele.
+ -Trans_Location_Counts- Trans counts per allele.
+ -Total_Cis_Location_Counts- Sum of cis counts across alleles.
+ -Total_Trans_Location_Counts- Sum of trans counts across alleles.
+ -Percent_Location_in_Cis- Percentage contribution of each allele to total cis counts.
+ -Percent_Location_in_Trans- Percentage contribution of each allele to total trans counts.
+```{r cis-trans-normalization}
+
+dat <- dat %>%
+  group_by(batch, time, condition, allele) %>%
+  mutate(
+    Cis_Location_Counts = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+    Trans_Location_Counts = sum(count[cis_trans == "TRANS"], na.rm = TRUE)
+  ) %>%
+  group_by(batch, time, condition) %>%
+  mutate(
+    Total_Cis_Location_Counts   = sum(Cis_Location_Counts,   na.rm = TRUE),
+    Total_Trans_Location_Counts = sum(Trans_Location_Counts, na.rm = TRUE),
+    Percent_Location_in_Cis     = ifelse(
+      Total_Cis_Location_Counts > 0,
+      100 * Cis_Location_Counts   / Total_Cis_Location_Counts,
+      NA_real_
+    ),
+    Percent_Location_in_Trans   = ifelse(
+      Total_Trans_Location_Counts > 0,
+      100 * Trans_Location_Counts / Total_Trans_Location_Counts,
+      NA_real_
+    )
+  ) %>%
+  ungroup()
+```
+Print data after cis/trans normalization
+
+-[OUTPUT]-
+```{r show-cis-trans-normalization}
+dat |> head(10) |> knitr::kable(caption = "Data after cis/trans normalization")
+```{r print-normalized, results="asis"}
+knitr::kable(
+  dat %>% distinct(batch, time, condition, allele, Percent_Location_in_Cis, Percent_Location_in_Trans),
+  caption = "Normalized cis/trans percentages by allele"
+)
+
+```
+---
+
+## 5. Inspect results
+
+-[DESCRIBE CODE AND VARIABLES]-
+
+This chunk opens an interactive data viewer for manual inspection of the final summarized dataset.
+
+-[OUTPUT]-
+
+An interactive spreadsheet-style view of `dat` in RStudio.
+```{r head, eval=FALSE}
+dat |> head(20) |> knitr::kable(caption = "Final summarized dataset")
+```
+Final output dataset
+
+-[OUTPUT]-
+```{r inspect-results, eval=FALSE}
+
+print(knitr::kable(dat |> head(20), caption = "Final summarized dataset"))
+```
