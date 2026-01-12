@@ -1,0 +1,4 @@
+# Project-level R environment variables.
+# This makes rmarkdown::render() find Pandoc on Windows when using Quarto.
+# Quarto bundles pandoc.exe in: <quarto>/bin/tools
+RSTUDIO_PANDOC=C:/Users/dunnmk/AppData/Local/Programs/Quarto/bin/tools

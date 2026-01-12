@@ -15,9 +15,23 @@ This R Markdown document reads, combines, and summarizes multiple
 
  -tidyverse- Provides `dplyr`, `readr`, `purrr`, `stringr`, and `ggplot2`, which are used throughout this analysis for data import, manipulation, and summarization.
 ```{r setup, message=FALSE}
-
-
 library(tidyverse)
+
+# Ensure rmarkdown can find Pandoc.
+# On Windows, Quarto bundles pandoc in: <quarto>/bin/tools/pandoc.exe.
+if (!nzchar(Sys.which("pandoc"))) {
+  quarto_exe <- Sys.which("quarto")
+  if (nzchar(quarto_exe)) {
+    quarto_tools <- normalizePath(
+      file.path(dirname(quarto_exe), "tools"),
+      winslash = "/",
+      mustWork = FALSE
+    )
+    if (dir.exists(quarto_tools)) {
+      Sys.setenv(RSTUDIO_PANDOC = quarto_tools)
+    }
+  }
+}
 ```
 ***
 
@@ -46,26 +60,28 @@ Purpose- Calculate percentages from aggregated counts
 
 ```{r aggregate-counts}
 dat_raw <- dat
-my_summarize <- function(dat){
-  dat %>% summarize(
-    Total_Counts   = sum(count),
-    Cis_Counts     = sum(count[cis_trans == "CIS"]),
-    Trans_Counts   = sum(count[cis_trans == "TRANS"]),
-    A_to_B_Counts  = sum(count[combo == "A_to_B"]),
-    C_to_D_Counts  = sum(count[combo == "C_to_D"]),
-    A_to_D_Counts  = sum(count[combo == "A_to_D"]),
-    C_to_B_Counts  = sum(count[combo == "C_to_B"]),
-    Percent_Cis    = 100 * Cis_Counts / Total_Counts,
-    Percent_Trans  = 100 * Trans_Counts / Total_Counts,
-    Percent_A_to_B = 100 * A_to_B_Counts / Total_Counts,
-    Percent_C_to_D = 100 * C_to_D_Counts / Total_Counts,
-    Percent_A_to_D = 100 * A_to_D_Counts / Total_Counts,
-    Percent_C_to_B = 100 * C_to_B_Counts / Total_Counts
-  )
+summarize_counts_pct <- function(dat){
+  dat %>%
+    summarise(
+      Total_Counts   = sum(count, na.rm = TRUE),
+      Cis_Counts     = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+      Trans_Counts   = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
+      A_to_B_Counts  = sum(count[combo == "A_to_B"], na.rm = TRUE),
+      C_to_D_Counts  = sum(count[combo == "C_to_D"], na.rm = TRUE),
+      A_to_D_Counts  = sum(count[combo == "A_to_D"], na.rm = TRUE),
+      C_to_B_Counts  = sum(count[combo == "C_to_B"], na.rm = TRUE),
+      Percent_Cis    = if_else(Total_Counts > 0, 100 * Cis_Counts / Total_Counts, NA_real_),
+      Percent_Trans  = if_else(Total_Counts > 0, 100 * Trans_Counts / Total_Counts, NA_real_),
+      Percent_A_to_B = if_else(Total_Counts > 0, 100 * A_to_B_Counts / Total_Counts, NA_real_),
+      Percent_C_to_D = if_else(Total_Counts > 0, 100 * C_to_D_Counts / Total_Counts, NA_real_),
+      Percent_A_to_D = if_else(Total_Counts > 0, 100 * A_to_D_Counts / Total_Counts, NA_real_),
+      Percent_C_to_B = if_else(Total_Counts > 0, 100 * C_to_B_Counts / Total_Counts, NA_real_),
+      .groups = "drop"
+    )
 }
 dat <- dat %>%
   group_by(batch, time_point, DSB) %>%
-  my_summarize()
+  summarize_counts_pct()
 str(dat)
 ```
 Print data after aggregation and new columns
@@ -77,21 +93,32 @@ xxxxx
 
 ```{r cis-trans-norm}
 my_summarize_cistrans <- function(dat){
-  dat %>%
+  by_allele <- dat %>%
     group_by(batch, time_point, DSB, allele) %>%
     summarise(
-      Cis_Location_Counts   = sum(count[cis_trans == "CIS"]),
-      Trans_Location_Counts = sum(count[cis_trans == "TRANS"]),
+      Cis_Location_Counts   = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+      Trans_Location_Counts = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
       .groups = "drop"
-    ) %>%
+    )
+
+  totals <- by_allele %>%
     group_by(batch, time_point, DSB) %>%
+    summarise(
+      Total_Cis_Location_Counts   = sum(Cis_Location_Counts, na.rm = TRUE),
+      Total_Trans_Location_Counts = sum(Trans_Location_Counts, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  by_allele %>%
+    left_join(totals, by = c("batch", "time_point", "DSB")) %>%
     mutate(
-      Total_Cis_Location_Counts   = sum(Cis_Location_Counts),
-      Total_Trans_Location_Counts = sum(Trans_Location_Counts),
-      Percent_Location_in_Cis     = 100 * Cis_Location_Counts   / Total_Cis_Location_Counts,
-      Percent_Location_in_Trans   = 100 * Trans_Location_Counts / Total_Trans_Location_Counts
-    ) %>%
-    ungroup()
+      Percent_Location_in_Cis   = if_else(Total_Cis_Location_Counts > 0,
+                                         100 * Cis_Location_Counts / Total_Cis_Location_Counts,
+                                         NA_real_),
+      Percent_Location_in_Trans = if_else(Total_Trans_Location_Counts > 0,
+                                         100 * Trans_Location_Counts / Total_Trans_Location_Counts,
+                                         NA_real_)
+    )
 }
 
 dat_norm <- my_summarize_cistrans(dat_raw)
@@ -102,22 +129,29 @@ dat_norm |> head(10) |> knitr::kable(caption = "Data after cis/trans normalizati
 
 ```{r allele-freq}
 my_summarize_allelefreq <- function(dat){
-  dat %>%
+  by_allele <- dat %>%
     group_by(batch, time_point, DSB, allele) %>%
     summarise(
-      Cis_Counts = sum(count[cis_trans == "CIS"]),
-      Trans_Counts = sum(count[cis_trans == "TRANS"]),
-      Allele_Total = Cis_Counts + Trans_Counts,
+      Cis_Counts    = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+      Trans_Counts  = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
+      Allele_Total  = Cis_Counts + Trans_Counts,
       .groups = "drop"
-    ) %>%
+    )
+
+  totals <- by_allele %>%
     group_by(batch, time_point, DSB) %>%
+    summarise(
+      Total_Cis   = sum(Cis_Counts, na.rm = TRUE),
+      Total_Trans = sum(Trans_Counts, na.rm = TRUE),
+      Total_All   = Total_Cis + Total_Trans,
+      .groups = "drop"
+    )
+
+  by_allele %>%
+    left_join(totals, by = c("batch", "time_point", "DSB")) %>%
     mutate(
-      Total_Cis = sum(Cis_Counts),
-      Total_Trans = sum(Trans_Counts),
-      Total_All = Total_Cis + Total_Trans,
-      Allele_Frequency = Allele_Total / Total_All
-    ) %>%
-    ungroup()
+      Allele_Frequency = if_else(Total_All > 0, Allele_Total / Total_All, NA_real_)
+    )
 }
 
 dat_allele_freq <- my_summarize_allelefreq(dat_raw)
@@ -186,43 +220,40 @@ knitr::kable(cor_summary, caption = "Correlation: log2FC vs Allele Frequency")
 # 6a. CIS percentage bar plot 
 
 ```{r CIS-bar-plot}
-plot_cis_percent <- function(dat_norm) {
-  ggplot(dat_norm, aes(x = allele, y = Percent_Location_in_Cis)) +
-    geom_col(width = 0.9, fill = "darkgreen") +
-    facet_grid(time_point ~ batch, scales = "free_x") +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
-    labs(title = "Percent in cis by allele", x = "Allele", y = "Percent in cis")
-}
+dat_plot_cis <- dat_raw %>%
+  filter(time_point %in% c(0, 120)) %>%
+  group_by(batch, time_point, DSB, allele) %>%
+  summarize_counts_pct()
 
-plot_cis_percent(dat_norm)
+ggplot(dat_plot_cis, aes(x = allele, y = Percent_Cis)) +
+  geom_col(width = 0.9, fill = "darkgreen") +
+  facet_grid(time_point ~ batch, scales = "free_x") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
+  labs(title = "Percent CIS by allele (T0 + T120)", x = "Allele", y = "Percent CIS")
 
 ```
 # 6b. trans percentage bar plot 
 
 ```{r trans-bar-plot}
 # 6b. TRANS percentage bar plots (A_to_D, C_to_B)
+# Built directly from filtered subsets of the original table, using the same summarise helper.
+
 plot_trans_percent <- function(dat, combo_name) {
   df_plot <- dat %>%
-    filter(combo == combo_name) %>%
+    filter(combo == combo_name, time_point %in% c(0, 120)) %>%
     group_by(batch, time_point, DSB, allele) %>%
-    summarise(Trans_Location_Counts = sum(count[cis_trans == "TRANS"]), .groups = "drop") %>%
-    group_by(batch, time_point, DSB) %>%
-    mutate(
-      Total_Trans_Location_Counts = sum(Trans_Location_Counts),
-      Percent_Location_in_Trans = 100 * Trans_Location_Counts / Total_Trans_Location_Counts
-    ) %>%
-    ungroup()
-  
+    summarize_counts_pct()
+
   if (nrow(df_plot) > 0) {
-    ggplot(df_plot, aes(x = allele, y = Percent_Location_in_Trans)) +
+    ggplot(df_plot, aes(x = allele, y = Percent_Trans)) +
       geom_col(fill = "steelblue", width = 0.9) +
       facet_grid(time_point ~ batch, scales = "free_x") +
       theme_bw() +
       theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
       labs(
-        title = paste("Percent in TRANS by allele:", combo_name),
-        x = "Allele", y = "Percent in TRANS"
+        title = paste("Percent TRANS by allele:", combo_name, "(T0 + T120)"),
+        x = "Allele", y = "Percent TRANS"
       )
   }
 }
