@@ -11,9 +11,9 @@ This R Markdown document reads, combines, and summarizes multiple
 ***
 ## 0. Packages
 
--[DESCRIBE CODE AND VARIABLES]-
+This section loads the packages used for import, manipulation, and plotting.
 
- -tidyverse- Provides `dplyr`, `readr`, `purrr`, `stringr`, and `ggplot2`, which are used throughout this analysis for data import, manipulation, and summarization.
+- `tidyverse` provides `dplyr`, `readr`, `purrr`, `stringr`, and `ggplot2`.
 ```{r setup, message=FALSE}
 library(tidyverse)
 
@@ -37,11 +37,12 @@ if (!nzchar(Sys.which("pandoc"))) {
 
 ## 1. Read and combine ALL CSVs
 
--[DESCRIBE CODE AND VARIABLES]-
+Reads all `_summary.csv` files from `folder` and combines them into a single table `dat`.
 
- -folder- Path to the directory containing all summary CSV files.
- -files- Vector of file paths matching the `_summary.csv` naming pattern.
- -raw_list- List of data frames, one per CSV file.
+- `folder`: directory containing summary CSVs
+- `files`: all matching file paths
+- `raw_list`: list of per-file data frames
+- `dat`: combined data frame
 ```{r import-csv}
 folder <- "C:/Users/dunnmk/Downloads/C_summary"
 files  <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
@@ -84,12 +85,318 @@ dat <- dat %>%
   summarize_counts_pct()
 str(dat)
 ```
-Print data after aggregation and new columns
 
-xxxxx
+The table above is now aggregated to batch × time_point × DSB.
 ***
 
-# 2. cis/trans normalization — compute totals and percentages per allele
+## 2.5 Batch-level QC plots (counts + composition)
+
+Purpose- Quick sanity-check plots *before* allele-level cis/trans normalization.
+
+```{r batch-qc-plots, message=FALSE, warning=FALSE}
+# Aggregate from the ungrouped/raw table (dat_raw)
+agg_qc <- dat_raw %>%
+  group_by(batch, time_point, DSB) %>%
+  summarize_counts_pct() %>%
+  ungroup()
+
+# Formatting helpers (avoid extra package dependencies)
+comma_label <- function(x) {
+  ifelse(is.na(x), NA_character_, formatC(x, format = "f", digits = 0, big.mark = ","))
+}
+
+pct_label <- function(x, digits = 1) {
+  ifelse(is.na(x), NA_character_, paste0(round(x, digits), "%"))
+}
+
+# 1) Total counts by batch
+p_total_counts <- ggplot(agg_qc, aes(x = batch, y = Total_Counts, fill = DSB)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  geom_text(
+    aes(label = comma_label(Total_Counts)),
+    position = position_dodge(width = 0.8),
+    vjust = -0.25,
+    size = 2.7
+  ) +
+  facet_wrap(~ time_point, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "Total counts by batch (faceted by time_point)",
+    x = "Batch",
+    y = "Total counts",
+    fill = "DSB"
+  )
+
+print(p_total_counts)
+
+# 2) CIS-only counts by category within each batch
+cis_counts_long <- agg_qc %>%
+  select(batch, time_point, DSB, Cis_Counts, A_to_B_Counts, C_to_D_Counts) %>%
+  pivot_longer(
+    cols = -c(batch, time_point, DSB),
+    names_to = "Metric",
+    values_to = "Counts"
+  ) %>%
+  mutate(
+    Metric = factor(
+      Metric,
+      levels = c("Cis_Counts", "A_to_B_Counts", "C_to_D_Counts"),
+      labels = c("CIS (total)", "A to B (cis)", "C to D (cis)")
+    )
+  )
+
+p_cis_counts <- ggplot(cis_counts_long, aes(x = batch, y = Counts, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+  geom_text(
+    aes(label = comma_label(Counts)),
+    position = position_dodge(width = 0.85),
+    vjust = -0.25,
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "CIS counts by category per batch",
+    x = "Batch",
+    y = "Counts",
+    fill = ""
+  )
+
+print(p_cis_counts)
+
+# 3) TRANS-only counts by category within each batch
+trans_counts_long <- agg_qc %>%
+  select(batch, time_point, DSB, Trans_Counts, A_to_D_Counts, C_to_B_Counts) %>%
+  pivot_longer(
+    cols = -c(batch, time_point, DSB),
+    names_to = "Metric",
+    values_to = "Counts"
+  ) %>%
+  mutate(
+    Metric = factor(
+      Metric,
+      levels = c("Trans_Counts", "A_to_D_Counts", "C_to_B_Counts"),
+      labels = c("TRANS (total)", "A to D (trans)", "C to B (trans)")
+    )
+  )
+
+p_trans_counts <- ggplot(trans_counts_long, aes(x = batch, y = Counts, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+  geom_text(
+    aes(label = comma_label(Counts)),
+    position = position_dodge(width = 0.85),
+    vjust = -0.25,
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "TRANS counts by category per batch",
+    x = "Batch",
+    y = "Counts",
+    fill = ""
+  )
+
+print(p_trans_counts)
+
+# 4) Percent CIS within each group (no pooling across groups)
+pct_cis_only <- agg_qc %>%
+  transmute(
+    batch, time_point, DSB,
+    Percent = Percent_Cis,
+    Label = pct_label(Percent)
+  )
+
+p_pct_cis <- ggplot(pct_cis_only, aes(x = batch, y = Percent, fill = DSB)) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = Label), vjust = -0.25, size = 2.6) +
+  facet_wrap(~ time_point) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "Percent CIS within each group",
+    x = "Batch",
+    y = "Percent of group total counts",
+    fill = "DSB"
+  )
+
+print(p_pct_cis)
+
+# 5) Percent TRANS within each group (no pooling across groups)
+pct_trans_only <- agg_qc %>%
+  transmute(
+    batch, time_point, DSB,
+    Percent = Percent_Trans,
+    Label = pct_label(Percent)
+  )
+
+p_pct_trans <- ggplot(pct_trans_only, aes(x = batch, y = Percent, fill = DSB)) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = Label), vjust = -0.25, size = 2.6) +
+  facet_wrap(~ time_point) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "Percent TRANS within each group",
+    x = "Batch",
+    y = "Percent of group total counts",
+    fill = "DSB"
+  )
+
+print(p_pct_trans)
+
+# 5b) Share of total CIS/TRANS by batch (within each time_point × DSB)
+# This answers the earlier "percent CIS compared to total CIS" request without pooling across time_point/DSB.
+pct_cis_share <- agg_qc %>%
+  group_by(time_point, DSB) %>%
+  mutate(
+    Total_Cis_TP = sum(Cis_Counts, na.rm = TRUE),
+    Percent = if_else(Total_Cis_TP > 0, 100 * Cis_Counts / Total_Cis_TP, NA_real_),
+    Label = pct_label(Percent)
+  ) %>%
+  ungroup() %>%
+  select(batch, time_point, DSB, Percent, Label)
+
+p_pct_cis_share <- ggplot(pct_cis_share, aes(x = batch, y = Percent, fill = DSB)) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = Label), vjust = -0.25, size = 2.6) +
+  facet_wrap(~ time_point) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "Share of total CIS counts by batch (within time_point × DSB)",
+    x = "Batch",
+    y = "% of CIS (within time_point × DSB)",
+    fill = "DSB"
+  )
+
+print(p_pct_cis_share)
+
+pct_trans_share <- agg_qc %>%
+  group_by(time_point, DSB) %>%
+  mutate(
+    Total_Trans_TP = sum(Trans_Counts, na.rm = TRUE),
+    Percent = if_else(Total_Trans_TP > 0, 100 * Trans_Counts / Total_Trans_TP, NA_real_),
+    Label = pct_label(Percent)
+  ) %>%
+  ungroup() %>%
+  select(batch, time_point, DSB, Percent, Label)
+
+p_pct_trans_share <- ggplot(pct_trans_share, aes(x = batch, y = Percent, fill = DSB)) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = Label), vjust = -0.25, size = 2.6) +
+  facet_wrap(~ time_point) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "Share of total TRANS counts by batch (within time_point × DSB)",
+    x = "Batch",
+    y = "% of TRANS (within time_point × DSB)",
+    fill = "DSB"
+  )
+
+print(p_pct_trans_share)
+
+# 6) Within-class combo composition (requested breakdowns)
+agg_combo_within <- dat_raw %>%
+  group_by(batch, time_point, DSB) %>%
+  summarise(
+    Cis_Counts   = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+    Trans_Counts = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
+
+    Cis_A_to_B_Counts = sum(count[cis_trans == "CIS" & combo == "A_to_B"], na.rm = TRUE),
+    Cis_C_to_D_Counts = sum(count[cis_trans == "CIS" & combo == "C_to_D"], na.rm = TRUE),
+
+    Trans_A_to_D_Counts = sum(count[cis_trans == "TRANS" & combo == "A_to_D"], na.rm = TRUE),
+    Trans_C_to_B_Counts = sum(count[cis_trans == "TRANS" & combo == "C_to_B"], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Percent_A_to_B_in_Cis = if_else(Cis_Counts > 0, 100 * Cis_A_to_B_Counts / Cis_Counts, NA_real_),
+    Percent_C_to_D_in_Cis = if_else(Cis_Counts > 0, 100 * Cis_C_to_D_Counts / Cis_Counts, NA_real_),
+    Percent_Other_in_Cis  = if_else(Cis_Counts > 0,
+                                   100 * pmax(Cis_Counts - Cis_A_to_B_Counts - Cis_C_to_D_Counts, 0) / Cis_Counts,
+                                   NA_real_),
+    Percent_A_to_D_in_Trans = if_else(Trans_Counts > 0, 100 * Trans_A_to_D_Counts / Trans_Counts, NA_real_),
+    Percent_C_to_B_in_Trans = if_else(Trans_Counts > 0, 100 * Trans_C_to_B_Counts / Trans_Counts, NA_real_),
+    Percent_Other_in_Trans  = if_else(Trans_Counts > 0,
+                                     100 * pmax(Trans_Counts - Trans_A_to_D_Counts - Trans_C_to_B_Counts, 0) / Trans_Counts,
+                                     NA_real_)
+  )
+
+cis_combo_long <- agg_combo_within %>%
+  select(batch, time_point, DSB, Percent_A_to_B_in_Cis, Percent_C_to_D_in_Cis, Percent_Other_in_Cis) %>%
+  pivot_longer(
+    cols = c(Percent_A_to_B_in_Cis, Percent_C_to_D_in_Cis, Percent_Other_in_Cis),
+    names_to = "Combo",
+    values_to = "Percent"
+  ) %>%
+  mutate(
+    Combo = recode(
+      Combo,
+      Percent_A_to_B_in_Cis = "A to B (within CIS)",
+      Percent_C_to_D_in_Cis = "C to D (within CIS)",
+      Percent_Other_in_Cis = "Other (within CIS)"
+    )
+  )
+
+p_cis_combo_comp <- ggplot(cis_combo_long, aes(x = batch, y = Percent, fill = Combo)) +
+  geom_col(width = 0.75) +
+  geom_text(
+    aes(label = if_else(is.na(Percent) | Percent <= 0, NA_character_, paste0(round(Percent, 1), "%"))),
+    position = position_stack(vjust = 0.5),
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "CIS composition: % A to B and % C to D (of CIS counts)",
+    x = "Batch",
+    y = "% of CIS counts",
+    fill = ""
+  )
+
+print(p_cis_combo_comp)
+
+trans_combo_long <- agg_combo_within %>%
+  select(batch, time_point, DSB, Percent_A_to_D_in_Trans, Percent_C_to_B_in_Trans, Percent_Other_in_Trans) %>%
+  pivot_longer(
+    cols = c(Percent_A_to_D_in_Trans, Percent_C_to_B_in_Trans, Percent_Other_in_Trans),
+    names_to = "Combo",
+    values_to = "Percent"
+  ) %>%
+  mutate(
+    Combo = recode(
+      Combo,
+      Percent_A_to_D_in_Trans = "A to D (within TRANS)",
+      Percent_C_to_B_in_Trans = "C to B (within TRANS)",
+      Percent_Other_in_Trans = "Other (within TRANS)"
+    )
+  )
+
+p_trans_combo_comp <- ggplot(trans_combo_long, aes(x = batch, y = Percent, fill = Combo)) +
+  geom_col(width = 0.75) +
+  geom_text(
+    aes(label = if_else(is.na(Percent) | Percent <= 0, NA_character_, paste0(round(Percent, 1), "%"))),
+    position = position_stack(vjust = 0.5),
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "TRANS composition: % A to D and % C to B (of TRANS counts)",
+    x = "Batch",
+    y = "% of TRANS counts",
+    fill = ""
+  )
+
+print(p_trans_combo_comp)
+
+```
+
+# 3. cis/trans normalization — compute totals and percentages per allele
 
 ```{r cis-trans-norm}
 my_summarize_cistrans <- function(dat){
@@ -125,15 +432,74 @@ dat_norm <- my_summarize_cistrans(dat_raw)
 dat_norm |> head(10) |> knitr::kable(caption = "Data after cis/trans normalization")
 ```
 ***
-# 3. Allele frequency (CIS + TRANS)
+# 4. Allele frequency (CIS + TRANS)
 
 ```{r allele-freq}
+cis_combos <- c("A_to_B", "C_to_D")
+trans_combos <- c("A_to_D", "C_to_B")
+
+# From section 4 onward, we define:
+#   CIS   := A_to_B + C_to_D
+#   TRANS := A_to_D + C_to_B
+# and ignore any other combos so each group has exactly two CIS counts.
+
+my_summarize_cistrans_by_combo <- function(dat, cis_combos, trans_combos){
+  by_allele <- dat %>%
+    group_by(batch, time_point, DSB, allele) %>%
+    summarise(
+      Cis_Location_Counts   = sum(count[combo %in% cis_combos], na.rm = TRUE),
+      Trans_Location_Counts = sum(count[combo %in% trans_combos], na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  totals <- by_allele %>%
+    group_by(batch, time_point, DSB) %>%
+    summarise(
+      Total_Cis_Location_Counts   = sum(Cis_Location_Counts, na.rm = TRUE),
+      Total_Trans_Location_Counts = sum(Trans_Location_Counts, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  by_allele %>%
+    left_join(totals, by = c("batch", "time_point", "DSB")) %>%
+    mutate(
+      # Group-total counts (restricted to the 4 combos only)
+      Total_Group_Counts = Total_Cis_Location_Counts + Total_Trans_Location_Counts,
+
+      # Requested semantics (section 4+):
+      #   CIS%  = cis_count / total_count
+      #   TRANS% = trans_count / total_count
+      # where total_count is the TOTAL within the group (batch × time_point × DSB)
+      # and CIS/TRANS are defined by the two combos each.
+      # NOTE: These are per-allele *contributions* to the group's total.
+      Percent_Cis_of_GroupTotal = if_else(Total_Group_Counts > 0,
+                                         100 * Cis_Location_Counts / Total_Group_Counts,
+                                         NA_real_),
+      Percent_Trans_of_GroupTotal = if_else(Total_Group_Counts > 0,
+                                           100 * Trans_Location_Counts / Total_Group_Counts,
+                                           NA_real_),
+
+      Percent_Location_in_Cis   = if_else(Total_Cis_Location_Counts > 0,
+                                         100 * Cis_Location_Counts / Total_Cis_Location_Counts,
+                                         NA_real_),
+      Percent_Location_in_Trans = if_else(Total_Trans_Location_Counts > 0,
+                                         100 * Trans_Location_Counts / Total_Trans_Location_Counts,
+                                         NA_real_)
+    )
+}
+
+# Filter to only the four combos used downstream
+dat_focus <- dat_raw %>%
+  filter(combo %in% c(cis_combos, trans_combos))
+
+dat_norm_combo <- my_summarize_cistrans_by_combo(dat_focus, cis_combos, trans_combos)
+
 my_summarize_allelefreq <- function(dat){
   by_allele <- dat %>%
     group_by(batch, time_point, DSB, allele) %>%
     summarise(
-      Cis_Counts    = sum(count[cis_trans == "CIS"], na.rm = TRUE),
-      Trans_Counts  = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
+      Cis_Counts    = sum(count[combo %in% cis_combos], na.rm = TRUE),
+      Trans_Counts  = sum(count[combo %in% trans_combos], na.rm = TRUE),
       Allele_Total  = Cis_Counts + Trans_Counts,
       .groups = "drop"
     )
@@ -154,48 +520,51 @@ my_summarize_allelefreq <- function(dat){
     )
 }
 
-dat_allele_freq <- my_summarize_allelefreq(dat_raw)
+dat_allele_freq <- my_summarize_allelefreq(dat_focus)
 str(dat_allele_freq)
 
 ```
 ***
-# 4. Fold change calculations (120 / 0)
+# 5. Fold change calculations (120 / 0)
 
 ```{r fold-change}
 library(tidyr)
 
-dat_fc_cis <- dat_norm %>%
+# Small pseudocount to avoid divide-by-zero for rare/absent alleles
+eps <- 1e-6
+
+dat_fc_cis <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
-  select(batch, time_point, DSB, allele, Percent_Location_in_Cis) %>%
-  pivot_wider(names_from = time_point, values_from = Percent_Location_in_Cis, values_fill = 0) %>%
+  select(batch, time_point, DSB, allele, Percent_Cis_of_GroupTotal) %>%
+  pivot_wider(names_from = time_point, values_from = Percent_Cis_of_GroupTotal, values_fill = 0) %>%
   mutate(
-    FoldChange_Cis_120_vs_0 = `120` / `0`,
-    Log2FC_Cis_120_vs_0 = log2(`120` / `0`)
+    FoldChange_Cis_120_vs_0 = (`120` + eps) / (`0` + eps),
+    Log2FC_Cis_120_vs_0 = log2(FoldChange_Cis_120_vs_0)
   )
 
-dat_fc_trans <- dat_norm %>%
+dat_fc_trans <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
-  select(batch, time_point, DSB, allele, Percent_Location_in_Trans) %>%
-  pivot_wider(names_from = time_point, values_from = Percent_Location_in_Trans, values_fill = 0) %>%
+  select(batch, time_point, DSB, allele, Percent_Trans_of_GroupTotal) %>%
+  pivot_wider(names_from = time_point, values_from = Percent_Trans_of_GroupTotal, values_fill = 0) %>%
   mutate(
-    FoldChange_Trans_120_vs_0 = `120` / `0`,
-    Log2FC_Trans_120_vs_0 = log2(`120` / `0`)
+    FoldChange_Trans_120_vs_0 = (`120` + eps) / (`0` + eps),
+    Log2FC_Trans_120_vs_0 = log2(FoldChange_Trans_120_vs_0)
   )
 
 ```
 ***
-# 5. Correlation: log2 Fold Change vs Allele Frequency
+# 6. Correlation: log2 Fold Change vs Allele Frequency
 
 ```{r cor-allelefreq}
 library(tidyr)
 
-dat_wide <- dat_norm %>%
+dat_wide <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
-  select(batch, DSB, allele, time_point, Percent_Location_in_Cis, Percent_Location_in_Trans) %>%
-  pivot_wider(names_from = time_point, values_from = c(Percent_Location_in_Cis, Percent_Location_in_Trans), values_fill = 0) %>%
+  select(batch, DSB, allele, time_point, Percent_Cis_of_GroupTotal, Percent_Trans_of_GroupTotal) %>%
+  pivot_wider(names_from = time_point, values_from = c(Percent_Cis_of_GroupTotal, Percent_Trans_of_GroupTotal), values_fill = 0) %>%
   mutate(
-    log2FC_CIS   = log2((Percent_Location_in_Cis_120 + 1e-6) / (Percent_Location_in_Cis_0 + 1e-6)),
-    log2FC_TRANS = log2((Percent_Location_in_Trans_120 + 1e-6) / (Percent_Location_in_Trans_0 + 1e-6))
+    log2FC_CIS   = log2((Percent_Cis_of_GroupTotal_120 + 1e-6) / (Percent_Cis_of_GroupTotal_0 + 1e-6)),
+    log2FC_TRANS = log2((Percent_Trans_of_GroupTotal_120 + 1e-6) / (Percent_Trans_of_GroupTotal_0 + 1e-6))
   )
 
 dat_fc_af <- dat_wide %>%
@@ -217,55 +586,102 @@ knitr::kable(cor_summary, caption = "Correlation: log2FC vs Allele Frequency")
 
 ```
 ***
-# 6a. CIS percentage bar plot 
+# 7a. CIS percentage bar plot 
 
 ```{r CIS-bar-plot}
-dat_plot_cis <- dat_raw %>%
+# From section 4 onward, CIS% is computed as cis_count / total_count (within an allele)
+# using only A_to_B + C_to_D as CIS and A_to_D + C_to_B as TRANS.
+df_cis_dist <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
-  group_by(batch, time_point, DSB, allele) %>%
-  summarize_counts_pct()
+  select(batch, time_point, DSB, allele, Percent_Cis_of_GroupTotal)
 
-ggplot(dat_plot_cis, aes(x = allele, y = Percent_Cis)) +
+ggplot(df_cis_dist, aes(x = allele, y = Percent_Cis_of_GroupTotal)) +
   geom_col(width = 0.9, fill = "darkgreen") +
-  facet_grid(time_point ~ batch, scales = "free_x") +
+  geom_text(
+    aes(label = if_else(is.na(Percent_Cis_of_GroupTotal), NA_character_, paste0(round(Percent_Cis_of_GroupTotal, 1), "%"))),
+    vjust = -0.25,
+    size = 2.3,
+    angle = 90
+  ) +
+  facet_grid(time_point ~ batch + DSB, scales = "free_x") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
-  labs(title = "Percent CIS by allele (T0 + T120)", x = "Allele", y = "Percent CIS")
+  labs(
+    title = "CIS% contribution by allele (cis_count / total_count; A_to_B + C_to_D; T0 + T120)",
+    x = "Allele",
+    y = "CIS% of group total"
+  )
 
 ```
-# 6b. trans percentage bar plot 
+# 7b. TRANS percentage bar plot 
 
 ```{r trans-bar-plot}
-# 6b. TRANS percentage bar plots (A_to_D, C_to_B)
-# Built directly from filtered subsets of the original table, using the same summarise helper.
+# From section 4 onward, TRANS is defined strictly as A_to_D + C_to_B.
+# TRANS% is trans_count / total_count within each allele.
 
-plot_trans_percent <- function(dat, combo_name) {
+df_trans_dist <- dat_norm_combo %>%
+  filter(time_point %in% c(0, 120)) %>%
+  select(batch, time_point, DSB, allele, Percent_Trans_of_GroupTotal)
+
+ggplot(df_trans_dist, aes(x = allele, y = Percent_Trans_of_GroupTotal)) +
+  geom_col(width = 0.9, fill = "steelblue") +
+  geom_text(
+    aes(label = if_else(is.na(Percent_Trans_of_GroupTotal), NA_character_, paste0(round(Percent_Trans_of_GroupTotal, 1), "%"))),
+    vjust = -0.25,
+    size = 2.3,
+    angle = 90
+  ) +
+  facet_grid(time_point ~ batch + DSB, scales = "free_x") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
+  labs(
+    title = "TRANS% contribution by allele (trans_count / total_count; A_to_D + C_to_B; T0 + T120)",
+    x = "Allele",
+    y = "TRANS% of group total"
+  )
+
+# Optional: TRANS distribution broken down by combo (A_to_D vs C_to_B)
+plot_trans_percent_by_combo <- function(dat, combo_name) {
   df_plot <- dat %>%
     filter(combo == combo_name, time_point %in% c(0, 120)) %>%
     group_by(batch, time_point, DSB, allele) %>%
-    summarize_counts_pct()
+    summarise(
+      Trans_Counts = sum(count, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    group_by(batch, time_point, DSB) %>%
+    mutate(
+      Total_Trans = sum(Trans_Counts, na.rm = TRUE),
+      Percent_Trans = if_else(Total_Trans > 0, 100 * Trans_Counts / Total_Trans, NA_real_)
+    ) %>%
+    ungroup()
 
   if (nrow(df_plot) > 0) {
     ggplot(df_plot, aes(x = allele, y = Percent_Trans)) +
       geom_col(fill = "steelblue", width = 0.9) +
-      facet_grid(time_point ~ batch, scales = "free_x") +
+      geom_text(
+        aes(label = if_else(is.na(Percent_Trans), NA_character_, paste0(round(Percent_Trans, 1), "%"))),
+        vjust = -0.25,
+        size = 2.3,
+        angle = 90
+      ) +
+      facet_grid(time_point ~ batch + DSB, scales = "free_x") +
       theme_bw() +
       theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
       labs(
-        title = paste("Percent TRANS by allele:", combo_name, "(T0 + T120)"),
-        x = "Allele", y = "Percent TRANS"
+        title = paste("Percent of", combo_name, "counts by allele (within group; T0 + T120)"),
+        x = "Allele",
+        y = "% within combo (within group)"
       )
   }
 }
 
-# Generate both TRANS plots
-plot_trans_percent(dat_raw, "A_to_D")
-plot_trans_percent(dat_raw, "C_to_B")
-
+plot_trans_percent_by_combo(dat_focus, "A_to_D")
+plot_trans_percent_by_combo(dat_focus, "C_to_B")
 
 ```
 ***
-# 7. Fold Change bar plot 
+# 8. Fold Change bar plot 
 
 ```{r foldchange-bar-plot}
 plot_foldchange_cis <- function(dat_fc_cis) {
@@ -280,7 +696,7 @@ plot_foldchange_cis <- function(dat_fc_cis) {
 plot_foldchange_trans <- function(dat_fc_trans) {
   ggplot(dat_fc_trans, aes(x = allele, y = FoldChange_Trans_120_vs_0)) +
     geom_col(width = 0.9, fill = "steelblue") +
-    facet_wrap(~ batch, scales = "free_x") +
+    facet_grid(DSB ~ batch, scales = "free_x") +
     theme_bw() +
     theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
     labs(title = "Fold change (120/0) in TRANS by allele", x = "Allele", y = "Fold change (120/0)")
@@ -289,7 +705,7 @@ plot_foldchange_trans <- function(dat_fc_trans) {
 plot_allele_frequency <- function(dat_allele_freq) {
   ggplot(dat_allele_freq, aes(x = allele, y = Allele_Frequency)) +
     geom_col(width = 0.9, fill = "purple") +
-    facet_grid(time_point ~ batch, scales = "free_x") +
+    facet_grid(time_point ~ batch + DSB, scales = "free_x") +
     theme_bw() +
     theme(axis.text.x = element_text(angle = 90, hjust = 0.5)) +
     labs(title = "Allele Frequency (CIS + TRANS)", x = "Allele", y = "Allele Frequency")
@@ -303,7 +719,7 @@ plot_allele_frequency(dat_allele_freq)
 # CIS fold change plot
 p1 <- ggplot(dat_fc_cis, aes(x = allele, y = FoldChange_Cis_120_vs_0, fill = DSB)) +
   geom_col(width = 0.9, position = "dodge") +
-  facet_wrap(~ batch, scales = "free_x") +
+  facet_grid(DSB ~ batch, scales = "free_x") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
   labs(title = "Fold change (120/0) CIS by allele", x = "Allele", y = "Fold change")
@@ -313,7 +729,7 @@ print(p1)
 # TRANS fold change plot  
 p2 <- ggplot(dat_fc_trans, aes(x = allele, y = FoldChange_Trans_120_vs_0, fill = DSB)) +
   geom_col(width = 0.9, position = "dodge") +
-  facet_wrap(~ batch, scales = "free_x") +
+  facet_grid(DSB ~ batch, scales = "free_x") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8)) +
   labs(title = "Fold change (120/0) TRANS by allele", x = "Allele", y = "Fold change")
@@ -323,46 +739,62 @@ print(p2)
 
 ```
 ***
-# 8. Correlation scatter plots (log2FC vs Allele Frequency)
+# 9. Correlation scatter plots (log2FC vs Allele Frequency)
 ```{r cor-allele-log}
-library(ggrepel)  # Add this line
+use_repel <- requireNamespace("ggrepel", quietly = TRUE)
 
-plot_correlation_cis <- function(dat_fc_af, batch_name) {
-  df_batch <- dat_fc_af %>% filter(batch == batch_name, DSB == "DSB1")
-  if (nrow(df_batch) >= 2) {
-    ggplot(df_batch, aes(x = Allele_Frequency, y = log2FC_CIS, label = allele)) +
+plot_correlation_cis <- function(dat_fc_af, batch_name, dsb_name) {
+  df_plot <- dat_fc_af %>% filter(batch == batch_name, DSB == dsb_name)
+  if (nrow(df_plot) >= 2) {
+    p <- ggplot(df_plot, aes(x = Allele_Frequency, y = log2FC_CIS, label = allele)) +
       geom_point(size = 3, alpha = 0.8, color = "darkgreen") +
       geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
       geom_smooth(method = "lm", se = FALSE, color = "red") +
-      geom_text_repel(size = 3, max.overlaps = 20) +
       theme_bw() +
       labs(
-        title = paste0("Log2FC CIS vs Allele Freq | Batch: ", batch_name),
+        title = paste0("Log2FC CIS vs Allele Freq | Batch: ", batch_name, " | DSB: ", dsb_name),
         x = "Allele Frequency", y = "log2FC CIS"
       )
+
+    if (use_repel) {
+      p <- p + ggrepel::geom_text_repel(size = 3, max.overlaps = 20)
+    } else {
+      p <- p + geom_text(size = 3, check_overlap = TRUE, vjust = -0.25)
+    }
+
+    p
   }
 }
 
-plot_correlation_trans <- function(dat_fc_af, batch_name) {
-  df_batch <- dat_fc_af %>% filter(batch == batch_name)
-  if (nrow(df_batch) >= 2) {
-    ggplot(df_batch, aes(x = Allele_Frequency, y = log2FC_TRANS, color = DSB, label = allele)) +
-      geom_point(size = 3, alpha = 0.8) +
+plot_correlation_trans <- function(dat_fc_af, batch_name, dsb_name) {
+  df_plot <- dat_fc_af %>% filter(batch == batch_name, DSB == dsb_name)
+  if (nrow(df_plot) >= 2) {
+    p <- ggplot(df_plot, aes(x = Allele_Frequency, y = log2FC_TRANS, label = allele)) +
+      geom_point(size = 3, alpha = 0.8, color = "steelblue") +
       geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
-      geom_smooth(method = "lm", se = FALSE) +
-      geom_text_repel(size = 3, max.overlaps = 20) +
+      geom_smooth(method = "lm", se = FALSE, color = "red") +
       theme_bw() +
       labs(
-        title = paste0("Log2FC TRANS vs Allele Freq | Batch: ", batch_name),
+        title = paste0("Log2FC TRANS vs Allele Freq | Batch: ", batch_name, " | DSB: ", dsb_name),
         x = "Allele Frequency", y = "log2FC TRANS"
       )
+
+    if (use_repel) {
+      p <- p + ggrepel::geom_text_repel(size = 3, max.overlaps = 20)
+    } else {
+      p <- p + geom_text(size = 3, check_overlap = TRUE, vjust = -0.25)
+    }
+
+    p
   }
 }
 
-# Generate plots
-unique_batches <- unique(dat_fc_af$batch)
-for (b in unique_batches) {
-  plot_correlation_cis(dat_fc_af, b)
-  plot_correlation_trans(dat_fc_af, b)
+# Generate plots per batch × DSB (no pooling)
+plot_keys <- dat_fc_af %>% distinct(batch, DSB) %>% arrange(batch, DSB)
+for (i in seq_len(nrow(plot_keys))) {
+  b <- plot_keys$batch[[i]]
+  d <- plot_keys$DSB[[i]]
+  print(plot_correlation_cis(dat_fc_af, b, d))
+  print(plot_correlation_trans(dat_fc_af, b, d))
 }
 ```

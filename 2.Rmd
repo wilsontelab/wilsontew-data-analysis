@@ -120,6 +120,248 @@ agg_counts <- filtered %>%
 agg_counts |> knitr::kable(caption = "Aggregated counts and percentages")
 
 ```
+
+***
+2.5. Batch-level QC plots (counts and CIS/TRANS composition)
+
+These plots are intended to sanity-check overall depth and composition *before* allele-level cis/trans normalization.
+
+```{r batch-qc-plots, message=FALSE}
+# Re-use the same aggregation logic as the table above
+agg_qc <- filtered %>%
+  group_by(batch, time_point, DSB) %>%
+  summarize_counts_pct() %>%
+  ungroup()
+
+# ---- 1) Total counts by batch ----
+p_total_counts <- ggplot(agg_qc, aes(x = batch, y = Total_Counts, fill = DSB)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  geom_text(
+    aes(label = scales::comma(Total_Counts)),
+    position = position_dodge(width = 0.8),
+    vjust = -0.25,
+    size = 2.7
+  ) +
+  facet_wrap(~ time_point, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "Total counts by batch (faceted by time)",
+    x = "Batch",
+    y = "Total counts"
+  )
+
+print(p_total_counts)
+
+# ---- 2) Counts by category within each batch (split CIS-only vs TRANS-only) ----
+cis_counts_long <- agg_qc %>%
+  select(
+    batch, time_point, DSB,
+    Cis_Counts,
+    A_to_B_Counts, C_to_D_Counts
+  ) %>%
+  pivot_longer(
+    cols = -c(batch, time_point, DSB),
+    names_to = "Metric",
+    values_to = "Counts"
+  ) %>%
+  mutate(
+    Metric = factor(
+      Metric,
+      levels = c("Cis_Counts", "A_to_B_Counts", "C_to_D_Counts"),
+      labels = c("CIS (total)", "A→B (cis)", "C→D (cis)")
+    )
+  )
+
+p_cis_counts_by_type <- ggplot(cis_counts_long, aes(x = batch, y = Counts, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+  geom_text(
+    aes(label = scales::comma(Counts)),
+    position = position_dodge(width = 0.85),
+    vjust = -0.25,
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "CIS counts by category per batch",
+    x = "Batch",
+    y = "Counts",
+    fill = ""
+  )
+
+print(p_cis_counts_by_type)
+
+trans_counts_long <- agg_qc %>%
+  select(
+    batch, time_point, DSB,
+    Trans_Counts,
+    A_to_D_Counts, C_to_B_Counts
+  ) %>%
+  pivot_longer(
+    cols = -c(batch, time_point, DSB),
+    names_to = "Metric",
+    values_to = "Counts"
+  ) %>%
+  mutate(
+    Metric = factor(
+      Metric,
+      levels = c("Trans_Counts", "A_to_D_Counts", "C_to_B_Counts"),
+      labels = c("TRANS (total)", "A→D (trans)", "C→B (trans)")
+    )
+  )
+
+p_trans_counts_by_type <- ggplot(trans_counts_long, aes(x = batch, y = Counts, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+  geom_text(
+    aes(label = scales::comma(Counts)),
+    position = position_dodge(width = 0.85),
+    vjust = -0.25,
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "TRANS counts by category per batch",
+    x = "Batch",
+    y = "Counts",
+    fill = ""
+  )
+
+print(p_trans_counts_by_type)
+
+# ---- 3) Percent CIS and Percent TRANS per group (split) ----
+pct_cis_only <- agg_qc %>%
+  select(batch, time_point, DSB, Percent_Cis) %>%
+  mutate(Percent_Cis_Label = if_else(is.na(Percent_Cis), NA_character_, paste0(round(Percent_Cis, 1), "%")))
+
+p_pct_cis <- ggplot(pct_cis_only, aes(x = batch, y = Percent_Cis, fill = DSB)) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = Percent_Cis_Label), vjust = -0.25, size = 2.6) +
+  facet_wrap(~ time_point) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "Percent CIS per group",
+    x = "Batch",
+    y = "Percent of total counts",
+    fill = "DSB"
+  )
+
+print(p_pct_cis)
+
+pct_trans_only <- agg_qc %>%
+  select(batch, time_point, DSB, Percent_Trans) %>%
+  mutate(Percent_Trans_Label = if_else(is.na(Percent_Trans), NA_character_, paste0(round(Percent_Trans, 1), "%")))
+
+p_pct_trans <- ggplot(pct_trans_only, aes(x = batch, y = Percent_Trans, fill = DSB)) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = Percent_Trans_Label), vjust = -0.25, size = 2.6) +
+  facet_wrap(~ time_point) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "Percent TRANS per group",
+    x = "Batch",
+    y = "Percent of total counts",
+    fill = "DSB"
+  )
+
+print(p_pct_trans)
+
+# ---- 4) Within-CIS and within-TRANS combo composition (requested breakdowns) ----
+agg_combo_within <- filtered %>%
+  group_by(batch, time_point, DSB) %>%
+  summarise(
+    Cis_Counts   = sum(count[cis_trans == "CIS"], na.rm = TRUE),
+    Trans_Counts = sum(count[cis_trans == "TRANS"], na.rm = TRUE),
+
+    Cis_A_to_B_Counts = sum(count[cis_trans == "CIS" & combo == "A_to_B"], na.rm = TRUE),
+    Cis_C_to_D_Counts = sum(count[cis_trans == "CIS" & combo == "C_to_D"], na.rm = TRUE),
+
+    Trans_A_to_D_Counts = sum(count[cis_trans == "TRANS" & combo == "A_to_D"], na.rm = TRUE),
+    Trans_C_to_B_Counts = sum(count[cis_trans == "TRANS" & combo == "C_to_B"], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Percent_A_to_B_in_Cis = pct(Cis_A_to_B_Counts, Cis_Counts),
+    Percent_C_to_D_in_Cis = pct(Cis_C_to_D_Counts, Cis_Counts),
+    Percent_Other_in_Cis   = pct(pmax(Cis_Counts - Cis_A_to_B_Counts - Cis_C_to_D_Counts, 0), Cis_Counts),
+    Percent_A_to_D_in_Trans = pct(Trans_A_to_D_Counts, Trans_Counts),
+    Percent_C_to_B_in_Trans = pct(Trans_C_to_B_Counts, Trans_Counts),
+    Percent_Other_in_Trans   = pct(pmax(Trans_Counts - Trans_A_to_D_Counts - Trans_C_to_B_Counts, 0), Trans_Counts)
+  )
+
+cis_combo_long <- agg_combo_within %>%
+  select(batch, time_point, DSB, Percent_A_to_B_in_Cis, Percent_C_to_D_in_Cis, Percent_Other_in_Cis) %>%
+  pivot_longer(
+    cols = c(Percent_A_to_B_in_Cis, Percent_C_to_D_in_Cis, Percent_Other_in_Cis),
+    names_to = "Combo",
+    values_to = "Percent"
+  ) %>%
+  mutate(
+    Combo = recode(
+      Combo,
+      Percent_A_to_B_in_Cis = "A→B (within CIS)",
+      Percent_C_to_D_in_Cis = "C→D (within CIS)",
+      Percent_Other_in_Cis = "Other (within CIS)"
+    )
+  )
+
+p_cis_combo_comp <- ggplot(cis_combo_long, aes(x = batch, y = Percent, fill = Combo)) +
+  geom_col(width = 0.75) +
+  geom_text(
+    aes(label = if_else(is.na(Percent) | Percent <= 0, NA_character_, paste0(round(Percent, 1), "%"))),
+    position = position_stack(vjust = 0.5),
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "CIS composition: % A→B and % C→D (of CIS counts)",
+    x = "Batch",
+    y = "% of CIS counts",
+    fill = ""
+  )
+
+print(p_cis_combo_comp)
+
+trans_combo_long <- agg_combo_within %>%
+  select(batch, time_point, DSB, Percent_A_to_D_in_Trans, Percent_C_to_B_in_Trans, Percent_Other_in_Trans) %>%
+  pivot_longer(
+    cols = c(Percent_A_to_D_in_Trans, Percent_C_to_B_in_Trans, Percent_Other_in_Trans),
+    names_to = "Combo",
+    values_to = "Percent"
+  ) %>%
+  mutate(
+    Combo = recode(
+      Combo,
+      Percent_A_to_D_in_Trans = "A→D (within TRANS)",
+      Percent_C_to_B_in_Trans = "C→B (within TRANS)",
+      Percent_Other_in_Trans = "Other (within TRANS)"
+    )
+  )
+
+p_trans_combo_comp <- ggplot(trans_combo_long, aes(x = batch, y = Percent, fill = Combo)) +
+  geom_col(width = 0.75) +
+  geom_text(
+    aes(label = if_else(is.na(Percent) | Percent <= 0, NA_character_, paste0(round(Percent, 1), "%"))),
+    position = position_stack(vjust = 0.5),
+    size = 2.4
+  ) +
+  facet_grid(time_point ~ DSB) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  labs(
+    title = "TRANS composition: % A→D and % C→B (of TRANS counts)",
+    x = "Batch",
+    y = "% of TRANS counts",
+    fill = ""
+  )
+
+print(p_trans_combo_comp)
+
+```
 ***
 3. Cis/trans normalization — per allele
 
