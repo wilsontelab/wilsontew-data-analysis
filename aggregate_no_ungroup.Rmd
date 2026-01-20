@@ -1,5 +1,5 @@
 ---
-title: "CSV Summary Analysis"
+title: "3C Summary CSV Aggregation and QC"
 output:
   html_document:
     theme: bootstrap
@@ -46,19 +46,21 @@ if (!nzchar(Sys.which("pandoc"))) {
 
 ## 1. Read and combine ALL CSVs
 
-Reads all `_summary.csv` files from `folder` and combines them into a single table `dat`.
+Reads all `_summary.csv` files from `folder` and combines them into a single master table `dat_raw`.
 
 - `folder`: directory containing summary CSVs
 - `files`: all matching file paths
 - `raw_list`: list of per-file data frames
-- `dat`: combined data frame
+- `dat_raw`: combined data frame
 ```{r import-csv}
-folder <- "C:/Users/dunnmk/Downloads/C_summary"
+folder <- "C:\\Users\\dunnmk\\University of Michigan Dropbox\\MED-WILSONTELAB\\wilsontelab box\\Common\\Projects\\Yeast Aim 3\\3C Sequencing Data\\3C_summary"
 files  <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
 raw_list <- lapply(files, read_csv)
-dat <- bind_rows(raw_list)
-str(dat)
-dat |> head(10) |> knitr::kable(caption = "Combined CSV preview")
+dat_raw <- bind_rows(raw_list)
+dat_raw <- dat_raw %>%
+  mutate(batch = factor(batch, levels = sort(unique(batch))))
+str(dat_raw)
+dat_raw |> head(10) |> knitr::kable(caption = "Preview: combined raw `_summary.csv` rows (first 10)")
 
 ```
 ***
@@ -69,7 +71,6 @@ dat |> head(10) |> knitr::kable(caption = "Combined CSV preview")
 Purpose- Calculate percentages from aggregated counts
 
 ```{r aggregate-counts}
-dat_raw <- dat
 summarize_counts_pct <- function(dat){
   dat %>%
     summarise(
@@ -89,10 +90,11 @@ summarize_counts_pct <- function(dat){
       .groups = "drop"
     )
 }
-dat <- dat %>%
+dat_agg_counts <- dat_raw %>%
   group_by(batch, time_point, DSB) %>%
   summarize_counts_pct()
-str(dat)
+str(dat_agg_counts)
+dat_agg_counts |> head(10) |> knitr::kable(caption = "Aggregated counts + derived percentages by batch × time_point × DSB (first 10)")
 ```
 
 The table above is now aggregated to batch × time_point × DSB.
@@ -103,11 +105,10 @@ The table above is now aggregated to batch × time_point × DSB.
 Purpose- Quick sanity-check plots *before* allele-level cis/trans normalization.
 
 ```{r batch-qc-plots, message=FALSE, warning=FALSE}
-# Aggregate from the ungrouped/raw table (dat_raw)
+# Aggregate from the master raw table
 agg_qc <- dat_raw %>%
   group_by(batch, time_point, DSB) %>%
-  summarize_counts_pct() %>%
-  ungroup()
+  summarize_counts_pct()
 
 # From here on in QC, compute CIS/TRANS using ONLY the 4 combos of interest:
 #   CIS   := A_to_B + C_to_D
@@ -152,7 +153,7 @@ agg_qc_combo4 %>%
     Percent_Trans
   ) %>%
   head(20) %>%
-  knitr::kable(caption = "QC check (4-combo definition): totals, excluded counts, CIS%/TRANS%")
+  knitr::kable(caption = "QC (4-combo definition): totals vs excluded counts, plus CIS%/TRANS% (first 20 rows)")
 
 # Formatting helpers (avoid extra package dependencies)
 comma_label <- function(x) {
@@ -437,7 +438,7 @@ my_summarize_cistrans <- function(dat){
 }
 
 dat_norm <- my_summarize_cistrans(dat_raw)
-dat_norm |> head(10) |> knitr::kable(caption = "Data after cis/trans normalization")
+dat_norm |> head(10) |> knitr::kable(caption = "Preview: allele-level CIS/TRANS counts and within-class percentages (first 10)")
 ```
 ***
 # 4. Allele frequency (CIS + TRANS)
@@ -544,8 +545,7 @@ dat_group4_share <- dat_group4 %>%
     Total_Trans_AllBatches = sum(Trans_Total),
     Percent_Cis_Share = if_else(Total_Cis_AllBatches > 0, 100 * Cis_Total / Total_Cis_AllBatches, NA_real_),
     Percent_Trans_Share = if_else(Total_Trans_AllBatches > 0, 100 * Trans_Total / Total_Trans_AllBatches, NA_real_)
-  ) %>%
-  ungroup()
+  )
 
 p_group4_trans_total <- ggplot(dat_group4_share, aes(x = batch, y = Percent_Trans_Share)) +
   geom_col(width = 0.75) +
@@ -754,10 +754,11 @@ cor_summary <- dat_fc_af %>%
   summarise(
     cor_CIS_AF   = ifelse(n() >= 2, cor(log2FC_CIS, Allele_Frequency), NA),
     cor_TRANS_AF = ifelse(n() >= 2, cor(log2FC_TRANS, Allele_Frequency), NA),
-    n_obs = n()
+    n_obs = n(),
+    .groups = "drop"
   )
 
-knitr::kable(cor_summary, caption = "Correlation: log2FC vs Allele Frequency")
+knitr::kable(cor_summary, caption = "Correlation summary: Pearson r between log2FC and allele frequency (by batch × DSB)")
 
 ```
 ***
@@ -887,8 +888,7 @@ plot_trans_percent_by_combo <- function(dat, combo_name) {
     mutate(
       Total_Trans = sum(Trans_Counts),
       Percent_Trans = if_else(Total_Trans > 0, 100 * Trans_Counts / Total_Trans, NA_real_)
-    ) %>%
-    ungroup()
+    )
 
   if (nrow(df_plot) == 0 || all(is.na(df_plot$Percent_Trans))) return(NULL)
 
