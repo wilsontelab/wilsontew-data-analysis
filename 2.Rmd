@@ -43,6 +43,187 @@ if (!nzchar(Sys.which("pandoc"))) {
     }
   }
 }
+
+# Some users open the exported CSVs in Excel, which can lock the file on Windows.
+# Use a safe writer that falls back to a timestamped filename if needed.
+safe_write_csv <- function(df, path) {
+  tryCatch(
+    {
+      readr::write_csv(df, path)
+      path
+    },
+    error = function(e) {
+      ts <- format(Sys.time(), "%Y%m%d_%H%M%S")
+      alt <- sub("\\.csv$", paste0("_", ts, ".csv"), path)
+      message(
+        "Could not write '",
+        path,
+        "' (",
+        conditionMessage(e),
+        "). Writing to '",
+        alt,
+        "' instead."
+      )
+      readr::write_csv(df, alt)
+      alt
+    }
+  )
+}
+
+# Toggle legacy normalization sections (currently unused in the streamlined report below).
+RUN_LEGACY_NORMALIZATION <- FALSE
+
+# Canonical 4-combo cis/trans definitions used throughout this report
+combos_4 <- c("A_to_B", "C_to_D", "A_to_D", "C_to_B")
+cis_combos <- c("A_to_B", "C_to_D")
+trans_combos <- c("A_to_D", "C_to_B")
+
+# PD controls used for normalization
+SPIKEIN_ALLELE <- "CHRXV_L18_1PERCENT_CONTROL"
+NOCUT_ALLELE <- "NO_CUT"
+CONTROL_ALLELES <- c(SPIKEIN_ALLELE, NOCUT_ALLELE)
+
+# Refactored summarizer: same schema for raw OR corrected counts.
+# - Works on any data frame that has a `combo` column and a numeric count column.
+# - Summarises over the canonical 4 combos, and computes cis/trans from combos.
+summarize_combo4_counts_pct <- function(dat,
+                                       count_col = "count",
+                                       group_cols = c("batch", "time_point", "DSB"),
+                                       combo_col = "combo") {
+  if (!is.character(count_col) || length(count_col) != 1) {
+    stop("count_col must be a single column name string")
+  }
+  if (!is.character(combo_col) || length(combo_col) != 1) {
+    stop("combo_col must be a single column name string")
+  }
+  if (!all(group_cols %in% names(dat))) {
+    missing <- setdiff(group_cols, names(dat))
+    stop("Missing grouping columns in data: ", paste(missing, collapse = ", "))
+  }
+  if (!(combo_col %in% names(dat))) {
+    stop("Missing combo column in data: ", combo_col)
+  }
+  if (!(count_col %in% names(dat))) {
+    stop("Missing count column in data: ", count_col)
+  }
+
+  dat %>%
+    filter(.data[[combo_col]] %in% combos_4) %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarise(
+      Total_Counts = sum(.data[[count_col]], na.rm = TRUE),
+      Cis_Counts = sum(.data[[count_col]][.data[[combo_col]] %in% cis_combos], na.rm = TRUE),
+      Trans_Counts = sum(.data[[count_col]][.data[[combo_col]] %in% trans_combos], na.rm = TRUE),
+      A_to_B_Counts = sum(.data[[count_col]][.data[[combo_col]] == "A_to_B"], na.rm = TRUE),
+      C_to_D_Counts = sum(.data[[count_col]][.data[[combo_col]] == "C_to_D"], na.rm = TRUE),
+      A_to_D_Counts = sum(.data[[count_col]][.data[[combo_col]] == "A_to_D"], na.rm = TRUE),
+      C_to_B_Counts = sum(.data[[count_col]][.data[[combo_col]] == "C_to_B"], na.rm = TRUE),
+      Percent_Cis = if_else(Total_Counts > 0, 100 * Cis_Counts / Total_Counts, NA_real_),
+      Percent_Trans = if_else(Total_Counts > 0, 100 * Trans_Counts / Total_Counts, NA_real_),
+      Percent_A_to_B = if_else(Total_Counts > 0, 100 * A_to_B_Counts / Total_Counts, NA_real_),
+      Percent_C_to_D = if_else(Total_Counts > 0, 100 * C_to_D_Counts / Total_Counts, NA_real_),
+      Percent_A_to_D = if_else(Total_Counts > 0, 100 * A_to_D_Counts / Total_Counts, NA_real_),
+      Percent_C_to_B = if_else(Total_Counts > 0, 100 * C_to_B_Counts / Total_Counts, NA_real_),
+      .groups = "drop"
+    )
+}
+
+# ---- Normalization helpers for plotting (A/(A+B)) ----
+# The PD summary CSVs encode:
+#   - repair orientation in `cis_trans` (CIS vs TRANS)
+#   - the 4 junction types in `combo` (A_to_B, C_to_D, A_to_D, C_to_B)
+#   - intact vs SSA in the `repeat` column (values like INTACT, SSA)
+#
+# These helpers compute the ratios needed for the sketch plots:
+#   %CIS   = CIS / (CIS + TRANS)
+#   %TRANS = TRANS / (CIS + TRANS)
+#   %INTACT = INTACT / (INTACT + SSA)
+#   %SSA    = SSA / (INTACT + SSA)
+
+ratio_ab <- function(a, b) {
+  if_else((a + b) > 0, a / (a + b), NA_real_)
+}
+
+summarize_cis_trans_ab <- function(dat,
+                                  count_col = "count",
+                                  group_cols = c("batch", "time_point", "DSB"),
+                                  cis_trans_col = "cis_trans",
+                                  combo_col = "combo") {
+  if (!all(group_cols %in% names(dat))) {
+    missing <- setdiff(group_cols, names(dat))
+    stop("Missing grouping columns in data: ", paste(missing, collapse = ", "))
+  }
+  if (!(cis_trans_col %in% names(dat))) stop("Missing cis/trans column: ", cis_trans_col)
+  if (!(combo_col %in% names(dat))) stop("Missing combo column: ", combo_col)
+  if (!(count_col %in% names(dat))) stop("Missing count column: ", count_col)
+
+  dat %>%
+    filter(.data[[combo_col]] %in% combos_4) %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarise(
+      Cis_Counts = sum(.data[[count_col]][.data[[cis_trans_col]] == "CIS"], na.rm = TRUE),
+      Trans_Counts = sum(.data[[count_col]][.data[[cis_trans_col]] == "TRANS"], na.rm = TRUE),
+      CisTrans_Total = Cis_Counts + Trans_Counts,
+      Fraction_Cis = ratio_ab(Cis_Counts, Trans_Counts),
+      Fraction_Trans = ratio_ab(Trans_Counts, Cis_Counts),
+      Percent_Cis = 100 * Fraction_Cis,
+      Percent_Trans = 100 * Fraction_Trans,
+      .groups = "drop"
+    )
+}
+
+summarize_intact_ssa_ab <- function(dat,
+                                   count_col = "count",
+                                   group_cols = c("batch", "time_point", "DSB"),
+                                   repeat_col = "repeat",
+                                   combo_col = "combo") {
+  if (!all(group_cols %in% names(dat))) {
+    missing <- setdiff(group_cols, names(dat))
+    stop("Missing grouping columns in data: ", paste(missing, collapse = ", "))
+  }
+  if (!(repeat_col %in% names(dat))) stop("Missing repeat column: ", repeat_col)
+  if (!(combo_col %in% names(dat))) stop("Missing combo column: ", combo_col)
+  if (!(count_col %in% names(dat))) stop("Missing count column: ", count_col)
+
+  dat %>%
+    filter(.data[[combo_col]] %in% combos_4) %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarise(
+      Intact_Counts = sum(.data[[count_col]][stringr::str_to_upper(as.character(.data[[repeat_col]])) == "INTACT"], na.rm = TRUE),
+      SSA_Counts = sum(.data[[count_col]][stringr::str_to_upper(as.character(.data[[repeat_col]])) == "SSA"], na.rm = TRUE),
+      IntactSSA_Total = Intact_Counts + SSA_Counts,
+      Fraction_Intact = ratio_ab(Intact_Counts, SSA_Counts),
+      Fraction_SSA = ratio_ab(SSA_Counts, Intact_Counts),
+      Percent_Intact = 100 * Fraction_Intact,
+      Percent_SSA = 100 * Fraction_SSA,
+      .groups = "drop"
+    )
+}
+
+summarize_allele_frequency <- function(dat,
+                                      count_col = "count",
+                                      group_cols = c("batch", "time_point", "DSB"),
+                                      allele_col = "allele",
+                                      combo_col = "combo") {
+  if (!all(group_cols %in% names(dat))) {
+    missing <- setdiff(group_cols, names(dat))
+    stop("Missing grouping columns in data: ", paste(missing, collapse = ", "))
+  }
+  if (!(allele_col %in% names(dat))) stop("Missing allele column: ", allele_col)
+  if (!(combo_col %in% names(dat))) stop("Missing combo column: ", combo_col)
+  if (!(count_col %in% names(dat))) stop("Missing count column: ", count_col)
+
+  dat %>%
+    filter(.data[[combo_col]] %in% combos_4) %>%
+    group_by(across(all_of(group_cols)), .data[[allele_col]]) %>%
+    summarise(Allele_Counts = sum(.data[[count_col]], na.rm = TRUE), .groups = "drop") %>%
+    group_by(across(all_of(group_cols))) %>%
+    mutate(
+      Total_Counts = sum(Allele_Counts, na.rm = TRUE),
+      Allele_Frequency = if_else(Total_Counts > 0, Allele_Counts / Total_Counts, NA_real_)
+    ) %>%
+    ungroup()
+}
 ```
 ***
 
@@ -56,10 +237,11 @@ Reads all `_summary.csv` files from `folder` and combines them into a single mas
 - `dat_raw`: combined data frame
 
 ```{r import-csv}
-folders <- c(
-  "C:\\Users\\dunnmk\\University of Michigan Dropbox\\MED-WILSONTELAB\\wilsontelab box\\Common\\Projects\\Yeast Aim 3\\3C Sequencing Data\\3C_summary",
-  "C:\\Users\\dunnmk\\University of Michigan Dropbox\\MED-WILSONTELAB\\wilsontelab box\\Common\\Projects\\Yeast Aim 3\\Sequencing\\PD Data"
-)
+pd_folder <- "C:\\Users\\dunnmk\\University of Michigan Dropbox\\MED-WILSONTELAB\\wilsontelab box\\Common\\Projects\\Yeast Aim 3\\Sequencing\\PD Data"
+
+# IMPORTANT:
+# This report is PD-only. Do not point it at 3C summary folders.
+folders <- c(pd_folder)
 
 files <- unlist(lapply(
   folders,
@@ -75,17 +257,117 @@ raw_list <- lapply(files, function(f) {
   if (!("repeat" %in% names(dat))) {
     dat <- dat %>% mutate(`repeat` = "ALL")
   }
+  if (!("replicate" %in% names(dat))) {
+    dat <- dat %>% mutate(replicate = "ALL")
+  }
+  if (!("alignment_name" %in% names(dat))) {
+    dat <- dat %>% mutate(alignment_name = NA_character_)
+  }
   dat %>%
     mutate(
+      source_path = f,
+      source_dir = dirname(f),
       source_file = basename(f),
-      `repeat` = as.character(`repeat`)
+      `repeat` = as.character(`repeat`),
+      replicate = as.character(replicate)
     )
 })
 dat_raw <- bind_rows(raw_list)
 dat_raw <- dat_raw %>%
   mutate(batch = factor(batch, levels = sort(unique(batch))))
+
+# Make sure key columns are character (helps joins and avoids factor surprises)
+dat_raw <- dat_raw %>%
+  mutate(
+    allele = as.character(allele),
+    combo = as.character(combo),
+    cis_trans = as.character(cis_trans),
+    `repeat` = as.character(`repeat`)
+  )
+
+# ---- PD-only normalization controls ----
+# 1) Between-batch normalization using the 1% spike-in allele.
+#    We compute a scale factor per (batch × time_point) from the spike-in totals,
+#    then multiply all counts in that group by the factor.
+#
+# 2) Within-repeat normalization using the NO_CUT control allele.
+#    We compute a NO_CUT denominator per (batch × time_point × DSB × combo × repeat),
+#    then divide each read count by its matched denominator.
+#
+# Notes:
+# - We restrict both control calculations to the canonical 4 combos.
+# - We exclude both control alleles from downstream PD biological summaries/plots.
+
+spike_totals <- dat_raw %>%
+  filter(allele == SPIKEIN_ALLELE, combo %in% combos_4) %>%
+  group_by(batch, time_point) %>%
+  summarise(SpikeIn_Counts = sum(count, na.rm = TRUE), .groups = "drop")
+
+spike_ref <- spike_totals %>%
+  filter(SpikeIn_Counts > 0) %>%
+  summarise(ref = median(SpikeIn_Counts, na.rm = TRUE)) %>%
+  pull(ref)
+
+if (length(spike_ref) == 0 || is.na(spike_ref)) {
+  spike_ref <- NA_real_
+}
+
+spike_factors <- spike_totals %>%
+  mutate(
+    SpikeIn_Scale = if_else(!is.na(spike_ref) & SpikeIn_Counts > 0, spike_ref / SpikeIn_Counts, 1.0),
+    SpikeIn_Flag = case_when(
+      is.na(spike_ref) ~ "no_spike_reference",
+      SpikeIn_Counts <= 0 ~ "missing_or_zero_spike",
+      TRUE ~ "ok"
+    )
+  )
+
+dat_raw <- dat_raw %>%
+  left_join(spike_factors %>% select(batch, time_point, SpikeIn_Scale, SpikeIn_Flag),
+            by = c("batch", "time_point")) %>%
+  mutate(
+    SpikeIn_Scale = replace_na(SpikeIn_Scale, 1.0),
+    SpikeIn_Flag = replace_na(SpikeIn_Flag, "missing_or_zero_spike"),
+    count_spike_scaled = count * SpikeIn_Scale
+  )
+
+nocut_denoms <- dat_raw %>%
+  filter(allele == NOCUT_ALLELE, combo %in% combos_4) %>%
+  group_by(batch, time_point, DSB, combo, `repeat`) %>%
+  summarise(NoCut_Denom = sum(count_spike_scaled, na.rm = TRUE), .groups = "drop")
+
+dat_raw <- dat_raw %>%
+  left_join(nocut_denoms, by = c("batch", "time_point", "DSB", "combo", "repeat")) %>%
+  mutate(
+    # Doubly-normalized counts: spike-in scaled, then normalized to the matched NO_CUT denominator.
+    count_norm = if_else(!is.na(NoCut_Denom) & NoCut_Denom > 0,
+                         count_spike_scaled / NoCut_Denom,
+                         NA_real_)
+  )
+
+# PD biological rows only (exclude the spike-in and NO_CUT control alleles)
+dat_pd <- dat_raw %>%
+  filter(!(allele %in% CONTROL_ALLELES))
+
 str(dat_raw)
+
+# Quick diagnostic: what time_points are coming from which directory?
+dat_raw %>%
+  count(source_dir, time_point, sort = TRUE, name = "n_rows") %>%
+  head(30) %>%
+  knitr::kable(caption = "Diagnostic: rows by source_dir × time_point (top 30)")
+
 dat_raw |> head(10) |> knitr::kable(caption = "Preview: combined raw `_summary.csv` rows (first 10)")
+
+# Quick QC: spike-in totals and applied scale factors (PD only)
+spike_factors %>%
+  arrange(time_point, batch) %>%
+  knitr::kable(caption = "Spike-in totals and scaling factors by batch × time_point")
+
+nocut_denoms %>%
+  arrange(time_point, batch, DSB, `repeat`, combo) %>%
+  head(20) %>%
+  knitr::kable(caption = "NO_CUT denominators (spike-scaled) by batch × time_point × DSB × repeat × combo (first 20)")
 
 ```
 ***
@@ -95,29 +377,12 @@ dat_raw |> head(10) |> knitr::kable(caption = "Preview: combined raw `_summary.c
 Purpose- Calculate percentages from aggregated counts
 
 ```{r aggregate-counts}
-summarize_counts_pct <- function(dat){
-  dat %>%
-    summarise(
-      Total_Counts   = sum(count),
-      Cis_Counts     = sum(count[cis_trans == "CIS"]),
-      Trans_Counts   = sum(count[cis_trans == "TRANS"]),
-      A_to_B_Counts  = sum(count[combo == "A_to_B"]),
-      C_to_D_Counts  = sum(count[combo == "C_to_D"]),
-      A_to_D_Counts  = sum(count[combo == "A_to_D"]),
-      C_to_B_Counts  = sum(count[combo == "C_to_B"]),
-      Percent_Cis    = if_else(Total_Counts > 0, 100 * Cis_Counts / Total_Counts, NA_real_),
-      Percent_Trans  = if_else(Total_Counts > 0, 100 * Trans_Counts / Total_Counts, NA_real_),
-      Percent_A_to_B = if_else(Total_Counts > 0, 100 * A_to_B_Counts / Total_Counts, NA_real_),
-      Percent_C_to_D = if_else(Total_Counts > 0, 100 * C_to_D_Counts / Total_Counts, NA_real_),
-      Percent_A_to_D = if_else(Total_Counts > 0, 100 * A_to_D_Counts / Total_Counts, NA_real_),
-      Percent_C_to_B = if_else(Total_Counts > 0, 100 * C_to_B_Counts / Total_Counts, NA_real_),
-      .groups = "drop"
-    )
-}
-
-dat_agg_counts <- dat_raw %>%
-  group_by(batch, time_point, DSB) %>%
-  summarize_counts_pct()
+dat_agg_counts <- summarize_combo4_counts_pct(
+  dat_pd,
+  count_col = "count_spike_scaled",
+  group_cols = c("batch", "time_point", "DSB"),
+  combo_col = "combo"
+)
 
 str(dat_agg_counts)
 dat_agg_counts |> head(10) |> knitr::kable(caption = "Aggregated counts + derived percentages by batch × time_point × DSB (first 10)")
@@ -132,9 +397,9 @@ Purpose- Quick sanity-check plots *before* allele-level cis/trans normalization.
 
 ```{r batch-qc-plots, message=FALSE, warning=FALSE}
 # Aggregate from the master raw table
-agg_qc <- dat_raw %>%
+agg_qc <- dat_pd %>%
   group_by(batch, time_point, DSB) %>%
-  summarize_counts_pct()
+  summarize_combo4_counts_pct(count_col = "count_spike_scaled", group_cols = c("batch", "time_point", "DSB"), combo_col = "combo")
 
 # From here on in QC, compute CIS/TRANS using ONLY the 4 combos of interest:
 #   CIS   := A_to_B + C_to_D
@@ -147,11 +412,11 @@ agg_qc <- dat_raw %>%
 agg_qc_combo4 <- dat_raw %>%
   group_by(batch, time_point) %>%
   summarise(
-    Total_All = sum(count),
-    A_to_B = sum(count[combo == "A_to_B"]),
-    C_to_D = sum(count[combo == "C_to_D"]),
-    A_to_D = sum(count[combo == "A_to_D"]),
-    C_to_B = sum(count[combo == "C_to_B"]),
+    Total_All = sum(count_spike_scaled),
+    A_to_B = sum(count_spike_scaled[combo == "A_to_B"]),
+    C_to_D = sum(count_spike_scaled[combo == "C_to_D"]),
+    A_to_D = sum(count_spike_scaled[combo == "A_to_D"]),
+    C_to_B = sum(count_spike_scaled[combo == "C_to_B"]),
     .groups = "drop"
   ) %>%
   mutate(
@@ -190,106 +455,49 @@ pct_label <- function(x, digits = 1) {
   ifelse(is.na(x), NA_character_, paste0(round(x, digits), "%"))
 }
 
-# 1) Total counts by batch
-p_total_counts <- ggplot(agg_qc, aes(x = batch, y = Total_Counts, fill = DSB)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
-  geom_text(
-    aes(label = comma_label(Total_Counts)),
-    position = position_dodge(width = 0.8),
-    vjust = -0.25,
-    size = 2.7
-  ) +
-  facet_wrap(~ time_point, scales = "free_y") +
-  theme_bw() +
-  labs(
-    title = "Total counts by batch (faceted by time_point)",
-    x = "Batch",
-    y = "Total counts",
-    fill = "DSB"
-  )
+```
 
-if (nrow(agg_qc) > 0) {
-  print(p_total_counts)
-}
+***
 
-# 2) CIS-only counts by category within each batch (4-combo definition)
-cis_counts_long <- agg_qc_combo4 %>%
-  select(batch, time_point, Cis_Counts, A_to_B, C_to_D) %>%
-  pivot_longer(
-    cols = -c(batch, time_point),
-    names_to = "Metric",
-    values_to = "Counts"
-  ) %>%
-  mutate(
-    Metric = factor(
-      Metric,
-      levels = c("Cis_Counts", "A_to_B", "C_to_D"),
-      labels = c("CIS (total)", "A to B (cis)", "C to D (cis)")
-    )
-  )
+## 2.6 A/(A+B) normalization plots (CIS/TRANS and INTACT/SSA)
 
-p_cis_counts <- ggplot(cis_counts_long, aes(x = batch, y = Counts, fill = Metric)) +
-  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
-  geom_text(
-    aes(label = comma_label(Counts)),
-    position = position_dodge(width = 0.85),
-    vjust = -0.25,
-    size = 2.4
-  ) +
-  facet_wrap(~ time_point, scales = "free_y") +
-  theme_bw() +
-  labs(
-    title = "CIS counts by category per batch",
-    x = "Batch",
-    y = "Counts",
-    fill = ""
-  )
+These summaries use the $A/(A+B)$ form to match the expected trends:
 
-if (nrow(cis_counts_long) > 0) {
-  print(p_cis_counts)
-}
+- $\%\text{CIS} = \frac{\text{CIS}}{\text{CIS}+\text{TRANS}} \times 100$
+- $\%\text{TRANS} = \frac{\text{TRANS}}{\text{CIS}+\text{TRANS}} \times 100$
+- $\%\text{INTACT} = \frac{\text{INTACT}}{\text{INTACT}+\text{SSA}} \times 100$
+- $\%\text{SSA} = \frac{\text{SSA}}{\text{INTACT}+\text{SSA}} \times 100$
 
-# 3) TRANS-only counts by category within each batch (4-combo definition)
-trans_counts_long <- agg_qc_combo4 %>%
-  select(batch, time_point, Trans_Counts, A_to_D, C_to_B) %>%
-  pivot_longer(
-    cols = -c(batch, time_point),
-    names_to = "Metric",
-    values_to = "Counts"
-  ) %>%
-  mutate(
-    Metric = factor(
-      Metric,
-      levels = c("Trans_Counts", "A_to_D", "C_to_B"),
-      labels = c("TRANS (total)", "A to D (trans)", "C to B (trans)")
-    )
-  )
+```{r ab-normalization-plots, message=FALSE, warning=FALSE}
+group_cols_ab <- c("batch", "time_point", "DSB")
 
-p_trans_counts <- ggplot(trans_counts_long, aes(x = batch, y = Counts, fill = Metric)) +
-  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
-  geom_text(
-    aes(label = comma_label(Counts)),
-    position = position_dodge(width = 0.85),
-    vjust = -0.25,
-    size = 2.4
-  ) +
-  facet_wrap(~ time_point, scales = "free_y") +
-  theme_bw() +
-  labs(
-    title = "TRANS counts by category per batch",
-    x = "Batch",
-    y = "Counts",
-    fill = ""
-  )
+cis_trans_ab <- summarize_cis_trans_ab(
+  dat_pd,
+  count_col = "count_norm",
+  group_cols = group_cols_ab,
+  cis_trans_col = "cis_trans",
+  combo_col = "combo"
+)
 
-if (nrow(trans_counts_long) > 0) {
-  print(p_trans_counts)
-}
+intact_ssa_ab <- summarize_intact_ssa_ab(
+  dat_pd,
+  count_col = "count_norm",
+  group_cols = group_cols_ab,
+  repeat_col = "repeat",
+  combo_col = "combo"
+)
 
-# 4) CIS vs TRANS percent for each batch (single plot; bars side-by-side)
-# Percent_Cis/Percent_Trans are computed relative to TOTAL_4Combos.
-pct_cis_trans_long <- agg_qc_combo4 %>%
-  select(batch, time_point, Percent_Cis, Percent_Trans) %>%
+ab_joined <- cis_trans_ab %>%
+  left_join(intact_ssa_ab, by = group_cols_ab)
+
+ab_joined %>%
+  arrange(batch, DSB, time_point) %>%
+  head(20) %>%
+  knitr::kable(caption = "Preview: A/(A+B) normalized summaries (first 20 rows)")
+
+# Plot 1: CIS vs TRANS over time (each facet is batch × DSB)
+cis_trans_long <- ab_joined %>%
+  select(any_of(group_cols_ab), Percent_Cis, Percent_Trans) %>%
   pivot_longer(
     cols = c(Percent_Cis, Percent_Trans),
     names_to = "Class",
@@ -297,630 +505,333 @@ pct_cis_trans_long <- agg_qc_combo4 %>%
   ) %>%
   mutate(
     Class = recode(Class, Percent_Cis = "CIS", Percent_Trans = "TRANS"),
-    Label = pct_label(Percent)
+    time_point = as.numeric(as.character(time_point))
   )
 
-p_pct_cis_trans <- ggplot(pct_cis_trans_long, aes(x = batch, y = Percent, fill = Class)) +
-  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
-  geom_text(
-    aes(label = Label),
-    position = position_dodge(width = 0.85),
-    vjust = -0.25,
-    size = 3.2
-  ) +
-  facet_wrap(~ time_point) +
-  scale_y_continuous(limits = c(0, 110)) +
-  theme_bw() +
-  labs(
-    title = "QC: CIS vs TRANS percent per batch (within group)",
-    x = "Batch",
-    y = "% of total counts",
-    fill = ""
-  )
-
-if (nrow(pct_cis_trans_long) > 0 && any(!is.na(pct_cis_trans_long$Percent))) {
-  print(p_pct_cis_trans)
+if (nrow(cis_trans_long) > 0 && any(!is.na(cis_trans_long$Percent))) {
+  p_cis_trans_time <- ggplot(cis_trans_long, aes(x = time_point, y = Percent, color = Class, group = Class)) +
+    geom_line(linewidth = 1.1) +
+    geom_point(size = 2.5) +
+    facet_grid(DSB ~ batch, scales = "free_x") +
+    scale_y_continuous(limits = c(0, 100)) +
+    theme_bw() +
+    labs(
+      title = "CIS vs TRANS over time (A/(A+B) normalization)",
+      x = "Time point",
+      y = "% of (CIS + TRANS)",
+      color = ""
+    )
+  print(p_cis_trans_time)
 }
 
-# 5b) Percent TRANS per batch at T0 vs T120 (single plot; bars side-by-side)
-pct_trans_time_compare <- agg_qc_combo4 %>%
-  filter(time_point %in% c(0, 120)) %>%
-  transmute(
-    batch,
-    time_point = factor(time_point, levels = c(0, 120), labels = c("T0", "T120")),
-    Percent_Trans,
-    Label = pct_label(Percent_Trans)
-  )
-
-p_pct_trans_t0_t120 <- ggplot(pct_trans_time_compare, aes(x = batch, y = Percent_Trans, fill = time_point)) +
-  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
-  geom_text(
-    aes(label = Label),
-    position = position_dodge(width = 0.85),
-    vjust = -0.25,
-    size = 3.2
-  ) +
-  scale_y_continuous(limits = c(0, 110)) +
-  theme_bw() +
-  labs(
-    title = "QC: TRANS% per batch (T0 vs T120)",
-    x = "Batch",
-    y = "TRANS% of total",
-    fill = "Time"
-  )
-
-if (nrow(pct_trans_time_compare) > 0 && any(!is.na(pct_trans_time_compare$Percent_Trans))) {
-  print(p_pct_trans_t0_t120)
-}
-
-# 6) Within-class combo composition (stacked; should sum to 100% within class)
-# Use ONLY the two combos per class (A_to_B/C_to_D within CIS; A_to_D/C_to_B within TRANS)
-agg_combo_within_2only <- agg_qc_combo4
-
-cis_combo_long <- agg_combo_within_2only %>%
-  select(batch, time_point, Percent_A_to_B_in_Cis, Percent_C_to_D_in_Cis) %>%
+# Plot 2: INTACT vs SSA over time (each facet is batch × DSB)
+intact_ssa_long <- ab_joined %>%
+  select(any_of(group_cols_ab), Percent_Intact, Percent_SSA) %>%
   pivot_longer(
-    cols = c(Percent_A_to_B_in_Cis, Percent_C_to_D_in_Cis),
-    names_to = "Combo",
-    values_to = "Percent"
-  ) %>%
-  mutate(
-    Combo = recode(
-      Combo,
-      Percent_A_to_B_in_Cis = "A_to_B (within CIS)",
-      Percent_C_to_D_in_Cis = "C_to_D (within CIS)"
-    )
-  )
-
-p_cis_combo_comp <- ggplot(cis_combo_long, aes(x = batch, y = Percent, fill = Combo)) +
-  geom_col(width = 0.75) +
-  geom_text(
-    aes(label = if_else(is.na(Percent) | Percent <= 0, NA_character_, paste0(round(Percent, 1), "%"))),
-    position = position_stack(vjust = 0.5),
-    size = 2.4
-  ) +
-  facet_wrap(~ time_point) +
-  scale_y_continuous(limits = c(0, 100)) +
-  theme_bw() +
-  labs(
-    title = "QC: Within-CIS composition (A_to_B + C_to_D = 100%)",
-    x = "Batch",
-    y = "% of CIS",
-    fill = ""
-  )
-
-if (nrow(cis_combo_long) > 0 && any(!is.na(cis_combo_long$Percent))) {
-  print(p_cis_combo_comp)
-}
-
-trans_combo_long <- agg_combo_within_2only %>%
-  select(batch, time_point, Percent_A_to_D_in_Trans, Percent_C_to_B_in_Trans) %>%
-  pivot_longer(
-    cols = c(Percent_A_to_D_in_Trans, Percent_C_to_B_in_Trans),
-    names_to = "Combo",
-    values_to = "Percent"
-  ) %>%
-  mutate(
-    Combo = recode(
-      Combo,
-      Percent_A_to_D_in_Trans = "A_to_D (within TRANS)",
-      Percent_C_to_B_in_Trans = "C_to_B (within TRANS)"
-    )
-  )
-
-p_trans_combo_comp <- ggplot(trans_combo_long, aes(x = batch, y = Percent, fill = Combo)) +
-  geom_col(width = 0.75) +
-  geom_text(
-    aes(label = if_else(is.na(Percent) | Percent <= 0, NA_character_, paste0(round(Percent, 1), "%"))),
-    position = position_stack(vjust = 0.5),
-    size = 2.4
-  ) +
-  facet_wrap(~ time_point) +
-  scale_y_continuous(limits = c(0, 100)) +
-  theme_bw() +
-  labs(
-    title = "QC: Within-TRANS composition (A_to_D + C_to_B = 100%)",
-    x = "Batch",
-    y = "% of TRANS",
-    fill = ""
-  )
-
-if (nrow(trans_combo_long) > 0 && any(!is.na(trans_combo_long$Percent))) {
-  print(p_trans_combo_comp)
-}
-
-```
-
-# 3. cis/trans normalization — compute totals and percentages per allele
-
-```{r cis-trans-norm}
-my_summarize_cistrans <- function(dat){
-  by_allele <- dat %>%
-    group_by(batch, time_point, DSB, allele) %>%
-    summarise(
-      Cis_Location_Counts   = sum(count[cis_trans == "CIS"]),
-      Trans_Location_Counts = sum(count[cis_trans == "TRANS"]),
-      .groups = "drop"
-    )
-
-  totals <- by_allele %>%
-    group_by(batch, time_point, DSB) %>%
-    summarise(
-      Total_Cis_Location_Counts   = sum(Cis_Location_Counts),
-      Total_Trans_Location_Counts = sum(Trans_Location_Counts),
-      .groups = "drop"
-    )
-
-  by_allele %>%
-    left_join(totals, by = c("batch", "time_point", "DSB")) %>%
-    mutate(
-      Percent_Location_in_Cis   = if_else(Total_Cis_Location_Counts > 0,
-                                         100 * Cis_Location_Counts / Total_Cis_Location_Counts,
-                                         NA_real_),
-      Percent_Location_in_Trans = if_else(Total_Trans_Location_Counts > 0,
-                                         100 * Trans_Location_Counts / Total_Trans_Location_Counts,
-                                         NA_real_)
-    )
-}
-
-dat_norm <- my_summarize_cistrans(dat_raw)
-dat_norm |> head(10) |> knitr::kable(caption = "Preview: allele-level CIS/TRANS counts and within-class percentages (first 10)")
-```
-
-***
-
-## 3.5 Uncuttable-normalized allele combo profiles
-
-For this experiment, we normalize counts by the *uncuttable/control* signal **within each (batch × time_point × DSB)**.
-
-This section produces:
-
-- A table of per-allele, per-combo counts normalized to uncuttable.
-- A plot of **% of uncuttable** by allele, colored by combo, for each batch and time.
-
-```{r uncuttable-normalization, message=FALSE, warning=FALSE}
-# Define how to identify NO_CUT / uncuttable reads.
-# IMPORTANT: in this experiment we also have rows like "1PERCENTCONTROL".
-# We therefore:
-#   1) match NO_CUT labels fairly broadly (to catch variants like DSB2_NO_CUT_SSA), and
-#   2) explicitly EXCLUDE any 1% spike-in control rows from the NO_CUT denominator.
-uncuttable_pattern <- "NO[_\\W]*CUT|NOCUT|UNCUT"
-uncuttable_regex <- stringr::regex(uncuttable_pattern, ignore_case = TRUE)
-
-# The 1% spike-in appears in labels like "CHRXV_L18_1PERCENT_CONTROL".
-percent_control_regex <- stringr::regex("1PERCENT|PERCENTCONTROL|PERCENT_CONTROL", ignore_case = TRUE)
-
-# Determine which column actually contains NO_CUT labels.
-# Different runs/pipelines sometimes store these labels in different fields.
-# Include both character and factor columns.
-char_like_cols <- names(dat_raw)[vapply(dat_raw, function(x) is.character(x) || is.factor(x), logical(1))]
-if (length(char_like_cols) == 0) {
-  stop("No character/factor columns found in dat_raw; cannot locate NO_CUT labels.")
-}
-
-nocut_field_scores <- tibble(
-  field = char_like_cols,
-  n_matched = vapply(
-    char_like_cols,
-    function(col) {
-      v <- as.character(dat_raw[[col]])
-      sum(stringr::str_detect(v, uncuttable_regex) & !stringr::str_detect(v, percent_control_regex), na.rm = TRUE)
-    },
-    numeric(1)
-  )
-) %>%
-  arrange(desc(n_matched))
-
-nocut_field <- nocut_field_scores$field[[1]]
-
-nocut_field_scores %>%
-  head(10) %>%
-  knitr::kable(caption = "Diagnostic: candidate fields for NO_CUT labels (counts of matching rows; top 10).")
-
-if (is.na(nocut_field_scores$n_matched[[1]]) || nocut_field_scores$n_matched[[1]] == 0) {
-  warning(
-    "No NO_CUT rows detected in any character field using pattern '",
-    uncuttable_pattern,
-    "'. Normalized values will be NA/0. Check how NO_CUT is labeled in your input CSVs."
-  )
-}
-
-# Focus on the 4 key combos used throughout the report.
-combos_4 <- c("A_to_B", "C_to_D", "A_to_D", "C_to_B")
-
-# Aggregate to allele × combo within each batch/time/DSB
-dat_allele_combo_counts <- dat_raw %>%
-  filter(combo %in% combos_4) %>%
-  group_by(batch, time_point, replicate, DSB, `repeat`, allele, combo) %>%
-  summarise(Counts = sum(count, na.rm = TRUE), .groups = "drop") %>%
-  mutate(combo = factor(combo, levels = combos_4))
-
-# Compute DSB-specific NO_CUT denominator per batch/time/DSB.
-# If NO_CUT exists in multiple categories/classes for a given DSB, this sums them,
-# yielding the DSB-specific NO_CUT total within each (batch × time_point × DSB).
-dat_uncuttable_denoms <- dat_raw %>%
-  group_by(batch, time_point, replicate, DSB, `repeat`) %>%
-  summarise(
-    Uncuttable_Counts = sum(
-      if_else(
-        stringr::str_detect(.data[[nocut_field]], uncuttable_regex) &
-          !stringr::str_detect(.data[[nocut_field]], percent_control_regex),
-        count,
-        0
-      ),
-      na.rm = TRUE
-    ),
-    .groups = "drop"
-  )
-
-# Diagnostic: how many groups have a usable NO_CUT denominator?
-dat_uncuttable_denoms %>%
-  summarise(
-    Groups = n(),
-    Groups_with_NO_CUT = sum(Uncuttable_Counts > 0, na.rm = TRUE),
-    Groups_with_NO_CUT_zero = sum(Uncuttable_Counts <= 0, na.rm = TRUE),
-    Min_NO_CUT = suppressWarnings(min(Uncuttable_Counts, na.rm = TRUE)),
-    Median_NO_CUT = suppressWarnings(median(Uncuttable_Counts, na.rm = TRUE)),
-    Max_NO_CUT = suppressWarnings(max(Uncuttable_Counts, na.rm = TRUE))
-  ) %>%
-  knitr::kable(caption = "Diagnostic: summary of NO_CUT denominators across batch × time_point × DSB groups")
-
-# If denominators are all zero, show candidate values containing CUT/NOCUT/UNCUT to help identify labeling.
-if (all(dat_uncuttable_denoms$Uncuttable_Counts <= 0, na.rm = TRUE)) {
-  dat_raw %>%
-    mutate(.nocut_field_value = as.character(.data[[nocut_field]])) %>%
-    filter(stringr::str_detect(.nocut_field_value, stringr::regex("CUT|NOCUT|NO[_\\W]*CUT|UNCUT|INTACT", ignore_case = TRUE))) %>%
-    count(Value = .nocut_field_value, sort = TRUE, name = "Row_Count") %>%
-    head(30) %>%
-    knitr::kable(caption = paste0(
-      "No positive NO_CUT denominators found. Here are common values containing CUT/NOCUT/UNCUT/INTACT in field '",
-      nocut_field,
-      "' (first 30). Use this to refine the NO_CUT matcher."
-    ))
-}
-
-# Diagnostic: list the most common allele labels contributing to NO_CUT denominators.
-dat_raw %>%
-  filter(stringr::str_detect(.data[[nocut_field]], uncuttable_regex), !stringr::str_detect(.data[[nocut_field]], percent_control_regex)) %>%
-  count(Value = .data[[nocut_field]], wt = count, sort = TRUE, name = "Total_Counts") %>%
-  head(20) %>%
-  knitr::kable(caption = paste0(
-    "Top allele labels matched as NO_CUT (weighted by count; first 20). ",
-    "Matching field used: ", nocut_field, ". ",
-    "If this is empty, the NO_CUT matcher is not finding your labels."
-  ))
-
-# Diagnostic: show the actual NO_CUT denominators being used.
-# This confirms, for example, that Batch 4 DSB1 is normalized by Batch 4 DSB1 NO_CUT counts (per time_point).
-dat_uncuttable_denoms %>%
-  arrange(batch, time_point, replicate, DSB, `repeat`) %>%
-  head(20) %>%
-  knitr::kable(caption = "Uncuttable denominators (NO_CUT): Uncuttable_Counts per batch × time_point × replicate × DSB × repeat-class (first 20 rows)")
-
-if (any(dat_uncuttable_denoms$Uncuttable_Counts <= 0, na.rm = TRUE)) {
-  message("Note: Some batch × time_point × DSB groups have Uncuttable_Counts = 0; Percent_of_Uncuttable will be NA for those groups.")
-}
-
-# Normalize each allele×combo count by the uncuttable denominator for that DSB group
-dat_uncut_norm <- dat_allele_combo_counts %>%
-  left_join(dat_uncuttable_denoms, by = c("batch", "time_point", "replicate", "DSB", "repeat")) %>%
-  mutate(
-    Percent_of_Uncuttable = if_else(Uncuttable_Counts > 0,
-                                   100 * Counts / Uncuttable_Counts,
-                                   NA_real_)
-  )
-
-# Diagnostic: it is possible (and sometimes expected) for % of NO_CUT to exceed 100,
-# because this metric is a ratio to the NO_CUT signal, not a within-group probability.
-# Still, values >>100 can also indicate a very small NO_CUT denominator or a labeling mismatch.
-over_100 <- dat_uncut_norm %>%
-  filter(!is.na(Percent_of_Uncuttable), Percent_of_Uncuttable > 100) %>%
-  arrange(desc(Percent_of_Uncuttable))
-
-if (nrow(over_100) == 0) {
-  message("No allele×combo rows exceed 100% of NO_CUT.")
-} else {
-  over_100 %>%
-    transmute(
-      batch,
-      time_point,
-      DSB,
-      allele,
-      combo,
-      Counts,
-      Uncuttable_Counts,
-      Percent_of_Uncuttable = round(Percent_of_Uncuttable, 2)
-    ) %>%
-    head(25) %>%
-    knitr::kable(caption = "Rows where % of NO_CUT > 100 (top 25). Large values usually mean NO_CUT counts are low for that batch/time/DSB.")
-}
-
-# ---- Group-level CIS/TRANS after NO_CUT normalization ----
-# Note: NO_CUT normalization rescales counts within each (batch × time_point × DSB).
-# That means CIS and TRANS *fractions of total* are unchanged, but CIS/TRANS as
-# a percent of NO_CUT are newly normalized and can be compared across groups.
-cis_combos <- c("A_to_B", "C_to_D")
-trans_combos <- c("A_to_D", "C_to_B")
-
-dat_group_combo_counts <- dat_raw %>%
-  filter(combo %in% combos_4) %>%
-  group_by(batch, time_point, replicate, DSB, `repeat`, combo) %>%
-  summarise(Counts = sum(count, na.rm = TRUE), .groups = "drop") %>%
-  mutate(combo = factor(combo, levels = combos_4))
-
-dat_group_cistrans_norm <- dat_group_combo_counts %>%
-  group_by(batch, time_point, replicate, DSB, `repeat`) %>%
-  summarise(
-    Cis_Counts_4 = sum(Counts[combo %in% cis_combos], na.rm = TRUE),
-    Trans_Counts_4 = sum(Counts[combo %in% trans_combos], na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  left_join(dat_uncuttable_denoms, by = c("batch", "time_point", "replicate", "DSB", "repeat")) %>%
-  mutate(
-    Percent_Cis_of_NO_CUT = if_else(Uncuttable_Counts > 0, 100 * Cis_Counts_4 / Uncuttable_Counts, NA_real_),
-    Percent_Trans_of_NO_CUT = if_else(Uncuttable_Counts > 0, 100 * Trans_Counts_4 / Uncuttable_Counts, NA_real_)
-  )
-
-dat_group_cistrans_norm %>%
-  arrange(batch, time_point, replicate, DSB, `repeat`) %>%
-  head(20) %>%
-  knitr::kable(caption = "Preview: CIS and TRANS (4-combo) normalized to NO_CUT (% of NO_CUT; first 20 rows)")
-
-dat_uncut_norm |>
-  arrange(batch, time_point, replicate, DSB, `repeat`, allele, combo) |>
-  head(12) |>
-  knitr::kable(caption = "Preview: allele×combo counts normalized to uncuttable (% of uncuttable; first 12 rows)")
-
-# Plot: percent-of-uncuttable by allele, per batch.
-# Requested: make DSB1 and DSB2 separate plots (and also include TRANS), and add data labels.
-plot_df <- dat_uncut_norm %>%
-  filter(!is.na(Percent_of_Uncuttable)) %>%
-  mutate(
-    DSB = factor(DSB, levels = c("DSB1", "DSB2", "TRANS")),
-    Label = if_else(
-      is.na(Percent_of_Uncuttable),
-      NA_character_,
-      paste0(round(Percent_of_Uncuttable, 1), "%")
-    )
-  )
-
-if (nrow(plot_df) == 0) {
-  message("No uncuttable-normalized values to plot (Percent_of_Uncuttable is all NA).")
-} else {
-  batches <- plot_df %>% distinct(batch) %>% arrange(batch) %>% pull(batch)
-
-  for (b in batches) {
-    df_b <- plot_df %>% filter(batch == b)
-    if (nrow(df_b) == 0) next
-
-    for (dsb_name in c("DSB1", "DSB2", "TRANS")) {
-      df_bd <- df_b %>% filter(DSB == dsb_name)
-      if (nrow(df_bd) == 0) next
-
-      p <- ggplot(df_bd, aes(x = allele, y = Percent_of_Uncuttable, fill = combo)) +
-        geom_col(position = position_dodge(width = 0.9), width = 0.85) +
-        geom_text(
-          aes(label = Label),
-          position = position_dodge(width = 0.9),
-          vjust = -0.25,
-          size = 2.6,
-          angle = 90
-        ) +
-        facet_grid(`repeat` ~ time_point, scales = "free_x") +
-        theme_bw() +
-        theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-        labs(
-          title = paste0("Uncuttable-normalized allele×combo (% of NO_CUT) | Batch: ", b, " | ", dsb_name),
-          x = "Allele",
-          y = paste0("% of NO_CUT (within batch × time_point × ", dsb_name, ")"),
-          fill = "Combo"
-        )
-
-      print(p)
-    }
-  }
-}
-
-# Plot: CIS% of NO_CUT and TRANS% of NO_CUT (group-level), separately for DSB1, DSB2, and TRANS
-plot_ct <- dat_group_cistrans_norm %>%
-  filter(!is.na(Percent_Cis_of_NO_CUT) | !is.na(Percent_Trans_of_NO_CUT)) %>%
-  pivot_longer(
-    cols = c(Percent_Cis_of_NO_CUT, Percent_Trans_of_NO_CUT),
+    cols = c(Percent_Intact, Percent_SSA),
     names_to = "Class",
     values_to = "Percent"
   ) %>%
   mutate(
-    Class = recode(Class,
-                   Percent_Cis_of_NO_CUT = "CIS",
-                   Percent_Trans_of_NO_CUT = "TRANS"),
-    Label = if_else(is.na(Percent), NA_character_, paste0(round(Percent, 1), "%")),
-    DSB = factor(DSB, levels = c("DSB1", "DSB2", "TRANS"))
+    Class = recode(Class, Percent_Intact = "INTACT", Percent_SSA = "SSA"),
+    time_point = as.numeric(as.character(time_point))
   )
 
-if (nrow(plot_ct) == 0) {
-  message("No group-level CIS/TRANS NO_CUT-normalized values to plot.")
-} else {
-  batches_ct <- plot_ct %>% distinct(batch) %>% arrange(batch) %>% pull(batch)
-  for (b in batches_ct) {
-    df_b <- plot_ct %>% filter(batch == b)
-    if (nrow(df_b) == 0) next
-
-    for (dsb_name in c("DSB1", "DSB2", "TRANS")) {
-      df_bd <- df_b %>% filter(DSB == dsb_name)
-      if (nrow(df_bd) == 0) next
-
-      p <- ggplot(df_bd, aes(x = factor(time_point), y = Percent, fill = Class)) +
-        geom_col(position = position_dodge(width = 0.9), width = 0.8) +
-        geom_text(
-          aes(label = Label),
-          position = position_dodge(width = 0.9),
-          vjust = -0.25,
-          size = 3.0
-        ) +
-        theme_bw() +
-        labs(
-          title = paste0("CIS% and TRANS% of NO_CUT (4-combo totals) | Batch: ", b, " | ", dsb_name),
-          x = "Time point",
-          y = "% of NO_CUT",
-          fill = ""
-        )
-
-      print(p)
-    }
-  }
+if (nrow(intact_ssa_long) > 0 && any(!is.na(intact_ssa_long$Percent))) {
+  p_intact_ssa_time <- ggplot(intact_ssa_long, aes(x = time_point, y = Percent, color = Class, group = Class)) +
+    geom_line(linewidth = 1.1) +
+    geom_point(size = 2.5) +
+    facet_grid(DSB ~ batch, scales = "free_x") +
+    scale_y_continuous(limits = c(0, 100)) +
+    theme_bw() +
+    labs(
+      title = "INTACT vs SSA over time (A/(A+B) normalization)",
+      x = "Time point",
+      y = "% of (INTACT + SSA)",
+      color = ""
+    )
+  print(p_intact_ssa_time)
 }
-
 ```
 
 ***
 
-## 3.6 Two-step normalization: NO_CUT baseline + 1% spike-in anchor
+## 2.7 Allele frequency plots (normalized counts)
 
-This section implements the two-step scheme discussed:
+This section plots allele frequencies computed from the doubly-normalized counts (`count_norm`).
 
-1) **Normalize each feature to its DSB-specific NO_CUT total** (background/intact baseline)
-2) **Scale those NO_CUT-normalized ratios using the 1% spike-in** in the same DSB and repeat-class to approximate a per-cell-like quantity.
+```{r allele-frequency-plots, message=FALSE, warning=FALSE}
+# Compute allele frequencies per batch (and time_point × DSB) using normalized counts.
+dat_allele_freq <- summarize_allele_frequency(
+  dat_pd,
+  count_col = "count_norm",
+  group_cols = c("batch", "time_point", "DSB"),
+  allele_col = "allele",
+  combo_col = "combo"
+)
 
-For a feature count $C$ in a given (batch × time × replicate × DSB × repeat-class), and the DSB-specific NO_CUT total $NC$:
-
-$$R_{\text{NOCUT}} = \frac{C}{NC}$$
-
-In these PD summary CSVs, the 1% control appears as an *internal spike-in allele* (e.g. alleles containing `1PERCENT_CONTROL`).
-Let $S$ be the total spike-in counts in the same (DSB × repeat-class). A useful per-cell-like scaling is:
-
-$$R_{\text{final}} = \frac{C}{S} \quad\text{and}\quad R_{\text{final,per cell}} = 0.01\cdot\frac{C}{S}$$
-
-This corresponds to: normalize to NO_CUT, then rescale by the spike-in in that DSB/class (algebraically, the NO_CUT denominator cancels when both are taken in the same group).
-
-```{r nocut-plus-spikein, message=FALSE, warning=FALSE}
-# Two-step scheme for the PD CSVs:
-# - NO_CUT is represented as allele == "NO_CUT" (split by repeat-class and DSB)
-# - The 1% spike-in is represented as alleles like "*_1PERCENT_CONTROL" (also split by repeat-class and DSB)
-#
-# For each (batch × time_point × replicate × DSB × repeat-class):
-#   Step 1: R_NOCUT = C_feat / C_NOCUT_total
-#   Step 2: scale using spike-in: PerCell ~= 0.01 * C_feat / C_spike
-#          (equivalently: 0.01 * R_NOCUT / (C_spike / C_NOCUT_total))
-
-if (!exists("uncuttable_regex")) {
-  uncuttable_pattern <- "NO[_\\W]*CUT|NOCUT|UNCUT"
-  uncuttable_regex <- stringr::regex(uncuttable_pattern, ignore_case = TRUE)
-}
-if (!exists("percent_control_regex")) {
-  percent_control_regex <- stringr::regex("1PERCENT|PERCENTCONTROL|PERCENT_CONTROL", ignore_case = TRUE)
+freq_label <- function(x, accuracy = 0.1) {
+  ifelse(is.na(x), NA_character_, scales::percent(x, accuracy = accuracy))
 }
 
-combos_4 <- c("A_to_B", "C_to_D", "A_to_D", "C_to_B")
+# Only compare these two timepoints on the same plot (per your request)
+timepoints_compare <- c(0, 180)
 
-df_lab <- dat_raw %>%
+# Per-batch plots (each batch printed as a separate plot)
+plot_allele_frequency_by_batch <- function(df) {
+  batches <- df %>% distinct(batch) %>% arrange(batch) %>% pull(batch)
+  for (b in batches) {
+    df_batch <- df %>%
+      filter(batch == b) %>%
+      mutate(
+        time_point = as.numeric(as.character(time_point)),
+        allele = as.character(allele)
+      )
+    if (nrow(df_batch) == 0 || all(is.na(df_batch$Allele_Frequency))) next
+
+    dsbs <- df_batch %>% distinct(DSB) %>% arrange(DSB) %>% pull(DSB)
+
+    # ---- Bar plots (one plot per DSB): time_point 0 and 180 on the same plot ----
+    for (d in dsbs) {
+      df_plot <- df_batch %>%
+        filter(DSB == d, time_point %in% timepoints_compare)
+      if (nrow(df_plot) == 0 || all(is.na(df_plot$Allele_Frequency))) next
+
+      # If one of the requested timepoints is missing, skip to avoid misleading comparisons.
+      have_tps <- sort(unique(df_plot$time_point))
+      if (!all(timepoints_compare %in% have_tps)) next
+
+      # Order alleles (globally within this batch+DSB) by max frequency for readability
+      df_plot <- df_plot %>%
+        group_by(allele) %>%
+        mutate(.max_freq = max(Allele_Frequency, na.rm = TRUE)) %>%
+        ungroup() %>%
+        mutate(allele = forcats::fct_reorder(allele, .max_freq, .desc = TRUE))
+
+      df_plot <- df_plot %>%
+        mutate(time_point = factor(time_point, levels = timepoints_compare))
+
+      dodge <- position_dodge(width = 0.9)
+      p_bar <- ggplot(df_plot, aes(x = allele, y = Allele_Frequency, fill = time_point)) +
+        geom_col(width = 0.85, position = dodge) +
+        geom_text(
+          aes(label = freq_label(Allele_Frequency, accuracy = 0.1)),
+          position = dodge,
+          vjust = -0.25,
+          size = 3,
+          na.rm = TRUE
+        ) +
+        scale_y_continuous(
+          labels = scales::percent_format(accuracy = 1),
+          limits = c(0, 1),
+          expand = expansion(mult = c(0, 0.18))
+        ) +
+        theme_bw() +
+        theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 9)) +
+        labs(
+          title = paste0("Allele frequency by allele | Batch: ", b, " | DSB: ", d, " (normalized counts)"),
+          x = "Allele",
+          y = "Allele frequency",
+          fill = "Time point"
+        )
+      print(p_bar)
+    }
+  }
+}
+
+plot_allele_frequency_by_batch(dat_allele_freq)
+
+# Overall allele frequency pooled across batches (weighted by normalized counts)
+dat_allele_freq_overall <- dat_pd %>%
+  filter(combo %in% combos_4) %>%
+  group_by(time_point, DSB, allele) %>%
+  summarise(Allele_Counts = sum(count_norm, na.rm = TRUE), .groups = "drop") %>%
+  group_by(time_point, DSB) %>%
   mutate(
-    .allele_chr = as.character(allele),
-    .aln_chr = as.character(alignment_name),
-    is_spike = stringr::str_detect(.allele_chr, percent_control_regex) | stringr::str_detect(.aln_chr, percent_control_regex),
-    is_nocut_raw = stringr::str_detect(.allele_chr, uncuttable_regex) | stringr::str_detect(.aln_chr, stringr::regex("NO[_\\W]*CUT|NOCUT", ignore_case = TRUE))
-  )
-
-# Heuristic to avoid counting cross-DSB NO_CUT rows (e.g. "DSB2_NO_CUT" entries under DSB1)
-df_lab <- df_lab %>%
-  mutate(
-    is_nocut = case_when(
-      DSB == "DSB1" ~ is_nocut_raw & !stringr::str_detect(.aln_chr, stringr::regex("DSB2[_\\W]*NO[_\\W]*CUT", ignore_case = TRUE)),
-      DSB == "DSB2" ~ is_nocut_raw & !stringr::str_detect(.aln_chr, stringr::regex("DSB1[_\\W]*NO[_\\W]*CUT", ignore_case = TRUE)),
-      TRUE ~ is_nocut_raw
-    )
-  )
-
-df_lab %>%
-  summarise(
-    Rows = n(),
-    Rows_spike = sum(is_spike, na.rm = TRUE),
-    Rows_nocut = sum(is_nocut, na.rm = TRUE)
+    Total_Counts = sum(Allele_Counts, na.rm = TRUE),
+    Allele_Frequency = if_else(Total_Counts > 0, Allele_Counts / Total_Counts, NA_real_)
   ) %>%
-  knitr::kable(caption = "Diagnostic: detected NO_CUT and 1% spike-in rows in dat_raw")
+  ungroup()
 
-# Totals per group
-group_denoms <- df_lab %>%
-  group_by(batch, time_point, replicate, DSB, `repeat`) %>%
+if (nrow(dat_allele_freq_overall) > 0 && any(!is.na(dat_allele_freq_overall$Allele_Frequency))) {
+  df_overall <- dat_allele_freq_overall %>%
+    mutate(
+      time_point = as.numeric(as.character(time_point)),
+      allele = as.character(allele)
+    )
+
+  dsbs_overall <- df_overall %>% distinct(DSB) %>% arrange(DSB) %>% pull(DSB)
+
+  # Bar plots: one plot per DSB, time_point 0 and 180 on the same plot
+  for (d in dsbs_overall) {
+    df_plot <- df_overall %>%
+      filter(DSB == d, time_point %in% timepoints_compare)
+    if (nrow(df_plot) == 0 || all(is.na(df_plot$Allele_Frequency))) next
+
+    have_tps <- sort(unique(df_plot$time_point))
+    if (!all(timepoints_compare %in% have_tps)) next
+
+    df_plot <- df_plot %>%
+      group_by(allele) %>%
+      mutate(.max_freq = max(Allele_Frequency, na.rm = TRUE)) %>%
+      ungroup() %>%
+      mutate(allele = forcats::fct_reorder(allele, .max_freq, .desc = TRUE))
+
+    df_plot <- df_plot %>%
+      mutate(time_point = factor(time_point, levels = timepoints_compare))
+
+    dodge <- position_dodge(width = 0.9)
+    p_overall_bar <- ggplot(df_plot, aes(x = allele, y = Allele_Frequency, fill = time_point)) +
+      geom_col(width = 0.85, position = dodge) +
+      geom_text(
+        aes(label = freq_label(Allele_Frequency, accuracy = 0.1)),
+        position = dodge,
+        vjust = -0.25,
+        size = 3,
+        na.rm = TRUE
+      ) +
+      scale_y_continuous(
+        labels = scales::percent_format(accuracy = 1),
+        limits = c(0, 1),
+        expand = expansion(mult = c(0, 0.18))
+      ) +
+      theme_bw() +
+      theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 9)) +
+      labs(
+        title = paste0("Overall allele frequency pooled across batches | DSB: ", d, " (normalized counts)"),
+        x = "Allele",
+        y = "Allele frequency",
+        fill = "Time point"
+      )
+    print(p_overall_bar)
+  }
+}
+```
+
+***
+
+## 2.8 Pearson correlation: allele frequency changes by combo (t=0 vs t=180)
+
+This section compares allele frequencies between time point 0 and 180, **separately for each combo**, using Pearson correlation.
+
+```{r allele-freq-correlation-by-combo, message=FALSE, warning=FALSE}
+# Allele frequencies stratified by combo as well
+dat_allele_freq_combo <- summarize_allele_frequency(
+  dat_pd,
+  count_col = "count_norm",
+  group_cols = c("batch", "time_point", "DSB", "combo"),
+  allele_col = "allele",
+  combo_col = "combo"
+) %>%
+  mutate(time_point = as.numeric(as.character(time_point))) %>%
+  filter(time_point %in% timepoints_compare)
+
+# Wide format for correlation/scatter
+dat_wide <- dat_allele_freq_combo %>%
+  select(batch, DSB, combo, allele, time_point, Allele_Frequency) %>%
+  mutate(tp = paste0("t", time_point)) %>%
+  select(-time_point) %>%
+  tidyr::pivot_wider(names_from = tp, values_from = Allele_Frequency)
+
+# Correlation stats per facet
+cor_stats <- dat_wide %>%
+  group_by(batch, DSB, combo) %>%
   summarise(
-    C_NOCUT_total = sum(if_else(is_nocut & !is_spike, count, 0), na.rm = TRUE),
-    C_spike_total = sum(if_else(is_spike, count, 0), na.rm = TRUE),
+    n_pairs = sum(!is.na(t0) & !is.na(t180)),
+    r = if_else(n_pairs >= 3, cor(t0, t180, use = "complete.obs", method = "pearson"), NA_real_),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = if_else(
+      is.na(r),
+      paste0("n=", n_pairs),
+      paste0("r=", round(r, 3), "\n","n=", n_pairs)
+    ),
+    x = 0.02,
+    y = 0.98
+  )
+
+plot_cor_by_batch <- function(df_wide, df_stats) {
+  batches <- df_wide %>% distinct(batch) %>% arrange(batch) %>% pull(batch)
+  for (b in batches) {
+    dfb <- df_wide %>% filter(batch == b)
+    if (nrow(dfb) == 0) next
+
+    statsb <- df_stats %>% filter(batch == b)
+
+    p <- ggplot(dfb, aes(x = t0, y = t180)) +
+      geom_abline(slope = 1, intercept = 0, linewidth = 0.7, linetype = "dashed", color = "grey50") +
+      geom_point(alpha = 0.75, size = 1.8) +
+      facet_grid(combo ~ DSB) +
+      geom_text(
+        data = statsb,
+        aes(x = x, y = y, label = label),
+        inherit.aes = FALSE,
+        hjust = 0,
+        vjust = 1,
+        size = 3
+      ) +
+      scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+      scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+      theme_bw() +
+      labs(
+        title = paste0("Pearson correlation of allele frequencies (t=0 vs t=180) | Batch: ", b),
+        x = "Allele frequency at t=0",
+        y = "Allele frequency at t=180"
+      )
+    print(p)
+  }
+}
+
+plot_cor_by_batch(dat_wide, cor_stats)
+
+# Also print a pooled-across-batches view
+dat_wide_overall <- dat_wide %>%
+  group_by(DSB, combo, allele) %>%
+  summarise(
+    t0 = sum(t0, na.rm = TRUE),
+    t180 = sum(t180, na.rm = TRUE),
     .groups = "drop"
   )
 
-group_denoms %>%
+cor_stats_overall <- dat_wide_overall %>%
+  group_by(DSB, combo) %>%
   summarise(
-    Groups = n(),
-    Groups_with_NOCUT = sum(C_NOCUT_total > 0, na.rm = TRUE),
-    Groups_with_spike = sum(C_spike_total > 0, na.rm = TRUE)
+    n_pairs = sum(!is.na(t0) & !is.na(t180)),
+    r = if_else(n_pairs >= 3, cor(t0, t180, use = "complete.obs", method = "pearson"), NA_real_),
+    .groups = "drop"
   ) %>%
-  knitr::kable(caption = "Diagnostic: denominator availability by (batch × time × replicate × DSB × repeat-class)")
-
-group_denoms %>%
-  arrange(batch, time_point, replicate, DSB, `repeat`) %>%
-  head(20) %>%
-  knitr::kable(caption = "Preview: NO_CUT totals and spike-in totals (first 20 groups)")
-
-# Feature counts (allele × combo)
-feat_counts <- df_lab %>%
-  filter(combo %in% combos_4) %>%
-  group_by(batch, time_point, replicate, DSB, `repeat`, allele, combo) %>%
-  summarise(C_feat = sum(count, na.rm = TRUE), .groups = "drop")
-
-feat_norm <- feat_counts %>%
-  left_join(group_denoms, by = c("batch", "time_point", "replicate", "DSB", "repeat")) %>%
   mutate(
-    R_NOCUT = if_else(C_NOCUT_total > 0, C_feat / C_NOCUT_total, NA_real_),
-    Spike_per_NOCUT = if_else(C_NOCUT_total > 0, C_spike_total / C_NOCUT_total, NA_real_),
-    R_final = if_else(C_spike_total > 0, C_feat / C_spike_total, NA_real_),
-    R_final_per_cell = 0.01 * R_final
+    label = if_else(
+      is.na(r),
+      paste0("n=", n_pairs),
+      paste0("r=", round(r, 3), "\n","n=", n_pairs)
+    ),
+    x = 0.02,
+    y = 0.98
   )
 
-feat_norm %>%
-  arrange(batch, time_point, replicate, DSB, `repeat`, allele, combo) %>%
-  head(20) %>%
-  knitr::kable(caption = "Preview: two-step outputs. R_NOCUT = C_feat / NO_CUT_total; R_final = C_feat / spike_total; R_final_per_cell = 0.01 * R_final (first 20).")
-
-# Plot: per-cell-like abundance scaled by spike-in
-plot_final <- feat_norm %>%
-  filter(!is.na(R_final_per_cell)) %>%
-  filter(!stringr::str_detect(as.character(allele), percent_control_regex)) %>%
-  mutate(
-    DSB = factor(DSB, levels = c("DSB1", "DSB2", "TRANS")),
-    combo = factor(combo, levels = combos_4),
-    Label = if_else(is.na(R_final_per_cell), NA_character_, format(round(R_final_per_cell, 4), nsmall = 4))
-  )
-
-if (nrow(plot_final) == 0) {
-  message("No R_final_per_cell values to plot. Check that spike-in rows (1PERCENT_CONTROL) and NO_CUT rows are present with nonzero counts.")
-} else {
-  batches <- plot_final %>% distinct(batch) %>% arrange(batch) %>% pull(batch)
-  for (b in batches) {
-    df_b <- plot_final %>% filter(batch == b)
-    for (dsb_name in c("DSB1", "DSB2", "TRANS")) {
-      df_bd <- df_b %>% filter(DSB == dsb_name)
-      if (nrow(df_bd) == 0) next
-
-      p <- ggplot(df_bd, aes(x = allele, y = R_final_per_cell, fill = combo)) +
-        geom_col(position = position_dodge(width = 0.9), width = 0.85) +
-        geom_text(
-          aes(label = Label),
-          position = position_dodge(width = 0.9),
-          vjust = -0.25,
-          size = 2.4,
-          angle = 90
-        ) +
-        facet_grid(`repeat` ~ time_point, scales = "free_x") +
-        theme_bw() +
-        theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-        labs(
-          title = paste0("Two-step scaled per-cell-like abundance (0.01 * C_feat / spike_total) | Batch: ", b, " | ", dsb_name),
-          x = "Allele",
-          y = "Approx per-cell abundance (relative units)",
-          fill = "Combo"
-        )
-
-      print(p)
-    }
-  }
+if (nrow(dat_wide_overall) > 0) {
+  p_overall <- ggplot(dat_wide_overall, aes(x = t0, y = t180)) +
+    geom_abline(slope = 1, intercept = 0, linewidth = 0.7, linetype = "dashed", color = "grey50") +
+    geom_point(alpha = 0.75, size = 1.8) +
+    facet_grid(combo ~ DSB) +
+    geom_text(
+      data = cor_stats_overall,
+      aes(x = x, y = y, label = label),
+      inherit.aes = FALSE,
+      hjust = 0,
+      vjust = 1,
+      size = 3
+    ) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+    theme_bw() +
+    labs(
+      title = "Pearson correlation of allele frequencies (t=0 vs t=180) pooled across batches",
+      x = "Allele frequency at t=0",
+      y = "Allele frequency at t=180"
+    )
+  print(p_overall)
 }
 ```
