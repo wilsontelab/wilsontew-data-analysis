@@ -30,7 +30,40 @@ Then activate it and (re)register kernels if needed:
 
 - `conda activate wilsontew-jupyter-kernels`
 - `python -m ipykernel install --user --name wilsontew-py --display-name "Python (wilsontew)"`
-- `R -q -e "IRkernel::installspec(user = TRUE, name = 'wilsontew-r', displayname = 'R (wilsontew)')"`
+- `R -q -e "IRkernel::installspec(user = TRUE, name = 'wilsontew-r', displayname = 'R (wilsontew)', overwrite = TRUE)"`
+
+### Important: keep kernelspecs independent of random project envs
+
+When you run `ipykernel install --user` / `IRkernel::installspec(user = TRUE, ...)`,
+the kernelspec is written into your **user Jupyter kernels directory** (on Windows:
+`%APPDATA%\jupyter\kernels`). That’s a good thing:
+
+- Your notebooks won’t accidentally depend on some other repo’s conda env.
+- VS Code can discover the kernel even if you’re not currently “activated” into the env.
+
+If your `R (wilsontew)` kernel is currently launching via a totally unrelated env,
+just re-run the two registration commands above from inside the correct env; it
+will overwrite the old kernelspec.
+
+On Windows, there’s also a helper script that automates env creation + registration:
+
+- `scripts/install-kernels-windows.ps1`
+
+### If VS Code says: `spawn ... conda.exe ENOENT`
+
+If the VS Code Jupyter log shows something like:
+
+- `Kernel died Error: spawn C:/Users/<you>/miniforge3/Scripts/conda.exe ENOENT`
+
+that means the `wilsontew-r` kernelspec you selected is trying to launch **via a hard-coded conda.exe path** that doesn’t exist on the machine where the kernel is being started.
+
+Fix (Windows):
+
+1. Re-run: `scripts/install-kernels-windows.ps1`
+2. Restart VS Code.
+3. Re-select kernel **R (wilsontew)**.
+
+The installer will (re)register `wilsontew-r` and then **rewrite its kernelspec** to launch the environment’s `R.exe` via a small PowerShell wrapper, so it no longer depends on spawning `conda.exe` at runtime.
 
 > Notes
 >
