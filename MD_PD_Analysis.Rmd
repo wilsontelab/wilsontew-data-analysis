@@ -225,6 +225,7 @@ summarize_allele_frequency <- function(dat,
     ungroup()
 }
 ```
+
 ***
 
 ## 1. Read and combine ALL CSVs
@@ -237,7 +238,13 @@ Reads all `_summary.csv` files from `folder` and combines them into a single mas
 - `dat_raw`: combined data frame
 
 ```{r import-csv}
-pd_folder <- "C:\\Users\\dunnmk\\University of Michigan Dropbox\\MED-WILSONTELAB\\wilsontelab box\\Common\\Projects\\Yeast Aim 3\\Sequencing\\PD Data"
+# Local-first path (edit if needed)
+# - Default: ./PD_Data (relative to the folder you opened)
+# - Override: set WILSONTEW_PD_FOLDER
+pd_folder <- Sys.getenv("WILSONTEW_PD_FOLDER", unset = file.path(getwd(), "PD_Data"))
+pd_folder <- normalizePath(pd_folder, winslash = "/", mustWork = FALSE)
+if (!dir.exists(pd_folder)) dir.create(pd_folder, recursive = TRUE, showWarnings = FALSE)
+message("Using pd_folder: ", pd_folder)
 
 # IMPORTANT:
 # This report is PD-only. Do not point it at 3C summary folders.
@@ -251,6 +258,14 @@ files <- unlist(lapply(
     full.names = TRUE
   )
 ))
+
+if (length(files) == 0) {
+  stop(
+    "No *_summary.csv or *_collapsed_summary.csv files found in pd_folder: ", pd_folder,
+    "\n\nTo run locally, either copy your PD summary CSVs into that folder,",
+    " or set WILSONTEW_PD_FOLDER to the directory that contains them."
+  )
+}
 
 raw_list <- lapply(files, function(f) {
   dat <- read_csv(f)
@@ -370,6 +385,7 @@ nocut_denoms %>%
   knitr::kable(caption = "NO_CUT denominators (spike-scaled) by batch × time_point × DSB × repeat × combo (first 20)")
 
 ```
+
 ***
 
 ## 2. Aggregate counts and percentages
