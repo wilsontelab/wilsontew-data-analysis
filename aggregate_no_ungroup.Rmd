@@ -184,10 +184,25 @@ Reads all `_summary.csv` files from `folder` and combines them into a single mas
 - `raw_list`: list of per-file data frames
 - `dat_raw`: combined data frame
 ```{r import-csv}
-folder <- "C:\\Users\\dunnmk\\University of Michigan Dropbox\\MED-WILSONTELAB\\wilsontelab box\\Common\\Projects\\Yeast Aim 3\\3C Sequencing Data\\3C_summary"
-files  <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
-raw_list <- lapply(files, read_csv)
-dat_raw <- bind_rows(raw_list)
+# Local-first path (edit if needed)
+# - Default: ./ThreeC_Data (relative to the folder you opened)
+# - Override: set WILSONTEW_3C_FOLDER
+folder <- Sys.getenv("WILSONTEW_3C_FOLDER", unset = file.path(getwd(), "ThreeC_Data"))
+folder <- normalizePath(folder, winslash = "/", mustWork = FALSE)
+if (!dir.exists(folder)) dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+message("Using folder: ", folder)
+
+files <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
+if (length(files) == 0) {
+  stop(
+    "No *_summary.csv files found in folder: ", folder,
+    "\n\nTo run locally, either copy your 3C summary CSVs into that folder,",
+    " or set WILSONTEW_3C_FOLDER to the directory that contains them."
+  )
+}
+
+raw_list <- lapply(files, function(f) readr::read_csv(f, show_col_types = FALSE))
+dat_raw <- dplyr::bind_rows(raw_list)
 
 # NOTE: do not modify the imported raw table; use a working copy for all downstream computations.
 dat <- dat_raw %>%
