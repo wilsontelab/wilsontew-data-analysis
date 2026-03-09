@@ -59,11 +59,12 @@ function Find-CondaExe {
   }
 
   # Common Miniforge/Miniconda locations
-  $home = $env:USERPROFILE
+  # NOTE: PowerShell variable names are case-insensitive; `$home` would collide with built-in `$HOME`.
+  $userHome = $env:USERPROFILE
   $candidates += @(
-    [PSCustomObject]@{ Path = (Join-Path $home 'miniforge3\Scripts\conda.exe'); Kind = 'conda' },
-    [PSCustomObject]@{ Path = (Join-Path $home 'miniconda3\Scripts\conda.exe'); Kind = 'conda' },
-    [PSCustomObject]@{ Path = (Join-Path $home 'anaconda3\Scripts\conda.exe'); Kind = 'conda' },
+    [PSCustomObject]@{ Path = (Join-Path $userHome 'miniforge3\Scripts\conda.exe'); Kind = 'conda' },
+    [PSCustomObject]@{ Path = (Join-Path $userHome 'miniconda3\Scripts\conda.exe'); Kind = 'conda' },
+    [PSCustomObject]@{ Path = (Join-Path $userHome 'anaconda3\Scripts\conda.exe'); Kind = 'conda' },
     [PSCustomObject]@{ Path = 'C:\ProgramData\miniforge3\Scripts\conda.exe'; Kind = 'conda' },
     [PSCustomObject]@{ Path = 'C:\ProgramData\Miniconda3\Scripts\conda.exe'; Kind = 'conda' },
     [PSCustomObject]@{ Path = 'C:\ProgramData\Anaconda3\Scripts\conda.exe'; Kind = 'conda' }
@@ -136,8 +137,11 @@ function Invoke-EnvUpdate([string]$Name, [string]$EnvFile) {
   }
 }
 
-function Invoke-Run([string]$Name, [string[]]$Args) {
-  & $frontend.Path run -n $Name @Args
+function Invoke-Run([string]$Name, [string[]]$RunArgs) {
+  & $frontend.Path run -n $Name @RunArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw "conda run failed with exit code $LASTEXITCODE (env: $Name, args: $($RunArgs -join ' '))"
+  }
 }
 
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
@@ -209,13 +213,24 @@ Write-Section "2) Register USER kernelspecs (recommended)"
 Write-Host "This writes kernels into: $env:APPDATA\jupyter\kernels" -ForegroundColor DarkGray
 Write-Host "Environment location: default conda envs directory (no -p prefix used)" -ForegroundColor DarkGray
 
+# If kernelspecs already exist, remove them first. This avoids relying on
+# version-specific flags like ipykernel's --replace or IRkernel's overwrite=.
+$pyKernelDir = Join-Path $env:APPDATA 'jupyter\kernels\wilsontew-py'
+$rKernelDir  = Join-Path $env:APPDATA 'jupyter\kernels\wilsontew-r'
+foreach ($d in @($pyKernelDir, $rKernelDir)) {
+  if ($d -and (Test-Path $d)) {
+    Write-Host "Removing existing kernelspec dir: $d" -ForegroundColor DarkGray
+    Remove-Item -Recurse -Force $d
+  }
+}
+
 # Python kernel
 Write-Host "Registering Python kernel (wilsontew-py)..." -ForegroundColor Yellow
-Invoke-Run -Name $envName -Args @('python','-m','ipykernel','install','--user','--name','wilsontew-py','--display-name','Python (wilsontew)','--replace')
+Invoke-Run -Name $envName -RunArgs @('python','-m','ipykernel','install','--user','--name','wilsontew-py','--display-name','Python (wilsontew)')
 
 # R kernel
 Write-Host "Registering R kernel (wilsontew-r)..." -ForegroundColor Yellow
-Invoke-Run -Name $envName -Args @('R','-q','-e',"IRkernel::installspec(user = TRUE, name = 'wilsontew-r', displayname = 'R (wilsontew)', overwrite = TRUE)")
+Invoke-Run -Name $envName -RunArgs @('R','-q','-e',"IRkernel::installspec(user = TRUE, name = 'wilsontew-r', displayname = 'R (wilsontew)')")
 
 # Harden the wilsontew-r kernelspec so it does NOT depend on conda.exe at runtime.
 # Why: VS Code's Jupyter extension launches kernels by spawning argv[0]. If that
@@ -226,7 +241,7 @@ try {
 
   $psExe = Find-PowerShellExe
 
-  $envPrefix = (Invoke-Run -Name $envName -Args @('python','-c','import sys; print(sys.prefix)') | Select-Object -Last 1).Trim()
+  $envPrefix = (Invoke-Run -Name $envName -RunArgs @('python','-c','import sys; print(sys.prefix)') | Select-Object -Last 1).Trim()
   if (-not $envPrefix) { throw "Could not determine env prefix for '$envName'." }
 
   $kernelsDir = Join-Path $env:APPDATA 'jupyter\kernels\wilsontew-r'
@@ -245,14 +260,23 @@ try {
     ')',
     '',
     ('$EnvPrefix = ' + ("'" + $envPrefix.Replace("'","''") + "'")),
-    '$RExe = Join-Path $EnvPrefix "Lib\\R\\bin\\x64\\R.exe"',
     '',
-    'if (!(Test-Path $RExe)) {',
-    '  throw "R.exe not found at expected path: $RExe"',
+    '# Locate R.exe inside the conda env (conda-forge vs CRAN layouts differ)',
+    '$candidates = @(',
+    '  (Join-Path $EnvPrefix "Library\\bin\\R.exe"),',
+    '  (Join-Path $EnvPrefix "Scripts\\R.exe"),',
+    '  (Join-Path $EnvPrefix "bin\\R.exe"),',
+    '  (Join-Path $EnvPrefix "Lib\\R\\bin\\x64\\R.exe")',
+    ')',
+    '$RExe = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1',
+    'if (-not $RExe) {',
+    '  throw ("R.exe not found in env prefix: $EnvPrefix`nChecked:`n  - " + ($candidates -join "`n  - "))',
     '}',
+    '$RDir = Split-Path -Parent $RExe',
     '',
     '# Ensure conda-provided DLLs can be located (important on Windows).',
     '$extra = @(',
+    '  $RDir,',
     '  (Join-Path $EnvPrefix "Library\\bin"),',
     '  (Join-Path $EnvPrefix "Library\\usr\\bin"),',
     '  (Join-Path $EnvPrefix "Scripts"),',
