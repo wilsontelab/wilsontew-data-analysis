@@ -2,6 +2,12 @@
 
 Data analysis for TEW lab
 
+## 4C data location in this project
+
+- **Raw 4C input data**: aligned `.sam` files specified in `SAM_SAMPLES` inside `FourC_OneShot_Python_Report.ipynb`.
+- **Processed 4C outputs**: written by that notebook to `Outputs/4C_python`.
+- **Combined PD+3C+4C notebook behavior**: `PD_3C_4C_Combined_Report.ipynb` reads 4C summary-style CSVs from `WILSONTEW_4C_FOLDER` (default `Outputs/4C_python`) when compatible files are present; otherwise it falls back to a proxy 4C layer.
+
 ## Running the R notebooks
 
 The notebooks and `.Rmd` files in this repo are written in **R**.

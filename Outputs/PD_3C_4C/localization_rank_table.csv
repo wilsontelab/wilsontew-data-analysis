@@ -1,0 +1,25 @@
+DSB,repair_mode,rank,location,Localization_Score,Localization_Rank,agreement
+ALL,Unknown repair context,1,chrV:320001-330000,0.4848709404790652,1,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,2,chrV:110001-120000,0.4828758736320667,2,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,3,chrVII:830001-840000,0.480880806785068,3,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,4,chrM:70001-80000,0.47888573993806943,4,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,5,4C_Viewport:1-10000,0.4768906730910709,5,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,6,chrVIII:210001-220000,0.47489560624407234,6,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,7,chrII:110001-120000,0.4729005393970737,7,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,8,chrII:610001-620000,0.4709054725500752,8,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,9,chrIV:90001-100000,0.4689104057030766,9,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,10,chrIV:700001-710000,0.46691533885607794,10,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,11,chrXII:810001-820000,0.46492027200907937,11,PD-3C concordant (no 4C contrast)
+ALL,Unknown repair context,12,chrXII:40001-50000,0.46292520516208086,12,PD-3C concordant (no 4C contrast)
+TRANS,Cut (Not SSA),1,Chr7_L06,0.7311916400891529,3,Mixed direction
+TRANS,Cut (Not SSA),2,Chr4_L12_2,0.6518113072403301,4,Mixed direction
+TRANS,Cut (Not SSA),3,Chr4_L01,0.4961135520411828,7,Mixed direction
+TRANS,Cut (Not SSA),4,Chr15_L01,0.2023072651999455,10,Mixed direction
+TRANS,Cut (Not SSA),5,Chr4_L06_2,0.097671283779448,12,Mixed direction
+TRANS,Cut (Not SSA),6,Chr4_L03,0.014429328891151744,19,Mixed direction
+TRANS,Cut (Not SSA),7,UNCUTTABLE,-0.12768423834363182,29,Mixed direction
+TRANS,Cut (Not SSA),8,Chr3_L04,-0.27126090588815194,39,Mixed direction
+TRANS,Cut (Not SSA),9,Chr3_L02,-0.4673977545639323,42,Mixed direction
+TRANS,Cut (Not SSA),10,Chr7_L09,-0.5928584885789925,45,Mixed direction
+TRANS,Cut (Not SSA),11,Chr4_L13,-0.7273203446006435,47,Mixed direction
+TRANS,Cut (Not SSA),12,Chr12_L12,-0.7451448472908665,48,Mixed direction
