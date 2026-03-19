@@ -1,0 +1,13 @@
+stage,DSB,n_rows,n_loci,total_count
+t120_rows_after_basic_filters,DSB1,96,24,1097786
+t120_rows_after_basic_filters,DSB2,8,4,660814
+t120_rows_after_basic_filters,NA,194,26,65389
+rows_with_valid_dsb_label,DSB1,96,24,1097786
+rows_with_valid_dsb_label,DSB2,8,4,660814
+rows_with_canonical_allele,DSB1,96,24,1097786
+rows_with_canonical_allele,DSB2,8,4,660814
+rows_with_coordinate_match_direct,DSB1,88,22,918692
+rows_with_coordinate_match_chr_bucket_rescue,DSB1,4,1,24115
+rows_with_coordinate_match_chr_bucket_rescue,DSB2,4,3,539805
+rows_in_cis_channel_with_coords,DSB1,92,22,942807
+rows_in_cis_channel_with_coords,DSB2,4,3,539805

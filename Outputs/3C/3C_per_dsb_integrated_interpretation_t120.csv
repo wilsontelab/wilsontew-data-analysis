@@ -1,0 +1,3 @@
+DSB,induced_time_point,n_cis_rows,n_loci,n_pairs,spearman_rho,rho_ci_low,rho_ci_high,boot_draws,median_distance_mb,median_similarity,slope_lm,note,n_strata,median_trans_fraction,mean_trans_fraction,sd_trans_fraction,min_trans_fraction,max_trans_fraction,cis_decay_call,trans_call,integrated_call
+DSB1,120,0,0,0,NA,NA,NA,0,NA,NA,NA,No induced CIS rows available,NA,NA,NA,NA,NA,NA,insufficient CIS same-chromosome pairs,TRANS fraction unavailable,insufficient CIS same-chromosome pairs + TRANS fraction unavailable
+DSB2,120,0,0,0,NA,NA,NA,0,NA,NA,NA,No induced CIS rows available,NA,NA,NA,NA,NA,NA,insufficient CIS same-chromosome pairs,TRANS fraction unavailable,insufficient CIS same-chromosome pairs + TRANS fraction unavailable

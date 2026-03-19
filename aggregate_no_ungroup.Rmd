@@ -64,6 +64,17 @@ combos_4 <- c("A_to_B", "C_to_D", "A_to_D", "C_to_B")
 cis_combos <- c("A_to_B", "C_to_D")
 trans_combos <- c("A_to_D", "C_to_B")
 
+# Experimental design metadata (3C pooled-strain experiment)
+# NOTE:
+# - DSB1 varies by strain and is sampled over the common locus panel.
+# - DSB2 is batch-specific and MUST NOT be pooled across batches in one "DSB2" meta-group.
+design_dsb2_by_batch <- tibble::tribble(
+  ~batch, ~dsb2_chrom,
+  "4", "VII",
+  "6", "IV",
+  "8", "XV"
+)
+
 # Controls
 # Guideline #2: NO_CUT control is used to show baseline growth in media.
 # Guideline #3: 1% spike-in control is used to scale proportions across batch × time_point.
@@ -221,6 +232,32 @@ dat <- dat_raw %>%
 dat <- dat %>%
   filter(.data[[COL_TIME_POINT]] %in% c(0, 120))
 
+# ---- Design checks: pooled-strain / batch-specific DSB2 assumptions ----
+timepoint_coverage <- dat %>%
+  distinct(.data[[COL_BATCH]], .data[[COL_DSB]], .data[[COL_REPLICATE]], .data[[COL_TIME_POINT]]) %>%
+  group_by(.data[[COL_BATCH]], .data[[COL_DSB]], .data[[COL_REPLICATE]]) %>%
+  summarise(
+    has_t0 = any(.data[[COL_TIME_POINT]] == 0),
+    has_t120 = any(.data[[COL_TIME_POINT]] == 120),
+    .groups = "drop"
+  )
+
+missing_timepoint_pairs <- timepoint_coverage %>%
+  filter(!(has_t0 & has_t120))
+
+if (nrow(missing_timepoint_pairs) > 0) {
+  warning(
+    "Some batch × DSB × replicate groups are missing T0 or T120. ",
+    "Paired fold-change/correlation sections will automatically drop incomplete groups."
+  )
+}
+
+design_batch_table <- dat %>%
+  distinct(.data[[COL_BATCH]]) %>%
+  mutate(batch = as.character(.data[[COL_BATCH]])) %>%
+  left_join(design_dsb2_by_batch, by = "batch") %>%
+  arrange(batch)
+
 # ---- Guideline #3: spike-in scaling (batch × time_point) ----
 spike_totals <- dat %>%
   filter(.data[[COL_ALLELE]] == SPIKEIN_ALLELE, .data[[COL_COMBO]] %in% combos_4) %>%
@@ -288,6 +325,14 @@ nocut_denoms %>%
   arrange(time_point, batch, replicate, DSB, `repeat`, combo) %>%
   head(20) %>%
   knitr::kable(caption = "NO_CUT denominators (spike-scaled) by batch × time_point × replicate × DSB × repeat × combo (first 20)")
+
+design_batch_table %>%
+  knitr::kable(caption = "Batch-specific DSB2 chromosome map used for interpretation (do not pool DSB2 across batches)")
+
+if (nrow(missing_timepoint_pairs) > 0) {
+  missing_timepoint_pairs %>%
+    knitr::kable(caption = "Groups with incomplete T0/T120 pairing (excluded from paired fold-change/correlation calculations)")
+}
 
 ```
 ***
@@ -1383,66 +1428,10 @@ if (nrow(dat_wide_af) > 0) {
   plot_cor_by_batch(dat_wide_af, cor_stats)
 }
 
-# Pooled-across-batches view (sum counts then recompute frequencies)
-dat_allele_freq_combo_overall <- dat_bio %>%
-  filter(.data[[COL_COMBO]] %in% combos_4) %>%
-  group_by(across(all_of(c(COL_DSB, COL_COMBO, COL_TIME_POINT, COL_ALLELE)))) %>%
-  summarise(Allele_Counts = sum(.data[[COL_COUNT_NORM]], na.rm = TRUE), .groups = "drop") %>%
-  group_by(across(all_of(c(COL_DSB, COL_COMBO, COL_TIME_POINT)))) %>%
-  mutate(
-    Total_Counts = sum(Allele_Counts, na.rm = TRUE),
-    Allele_Frequency = if_else(Total_Counts > 0, Allele_Counts / Total_Counts, NA_real_)
-  ) %>%
-  ungroup() %>%
-  mutate(time_point = as.numeric(as.character(.data[[COL_TIME_POINT]]))) %>%
-  filter(time_point %in% timepoints_compare)
-
-dat_wide_overall <- dat_allele_freq_combo_overall %>%
-  select(all_of(c(COL_DSB, COL_COMBO, COL_ALLELE)), time_point, Allele_Frequency) %>%
-  mutate(tp = paste0("t", time_point)) %>%
-  select(-time_point) %>%
-  tidyr::pivot_wider(names_from = tp, values_from = Allele_Frequency)
-
-cor_stats_overall <- dat_wide_overall %>%
-  group_by(across(all_of(c(COL_DSB, COL_COMBO)))) %>%
-  summarise(
-    n_pairs = sum(!is.na(t0) & !is.na(t120)),
-    r = if_else(n_pairs >= 3, cor(t0, t120, use = "complete.obs", method = "pearson"), NA_real_),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    label = if_else(
-      is.na(r),
-      paste0("n=", n_pairs),
-      paste0("r=", round(r, 3), "\n", "n=", n_pairs)
-    ),
-    x = 0.02,
-    y = 0.98
-  )
-
-if (nrow(dat_wide_overall) > 0) {
-  p_overall <- ggplot(dat_wide_overall, aes(x = t0, y = t120)) +
-    geom_abline(slope = 1, intercept = 0, linewidth = 0.7, linetype = "dashed", color = "grey50") +
-    geom_point(alpha = 0.75, size = 1.8) +
-    facet_grid(.data[[COL_COMBO]] ~ .data[[COL_DSB]]) +
-    geom_text(
-      data = cor_stats_overall,
-      aes(x = x, y = y, label = label),
-      inherit.aes = FALSE,
-      hjust = 0,
-      vjust = 1,
-      size = 3
-    ) +
-    scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
-    scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
-    theme_bw() +
-    labs(
-      title = "Pearson correlation of allele frequencies (t=0 vs t=120) pooled across batches",
-      x = "Allele frequency at t=0",
-      y = "Allele frequency at t=120"
-    )
-  print(p_overall)
-}
+# IMPORTANT DESIGN NOTE:
+# We intentionally do NOT produce a single pooled-across-batches DSB2 correlation panel.
+# DSB2 is batch-specific in this experiment (batch 4 = ChrVII, 6 = ChrIV, 8 = ChrXV),
+# so pooling DSB2 across batches creates a synthetic/non-biological "DSB2" group.
 ```
 
 ---
@@ -1464,6 +1453,7 @@ dat_fc_cis <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
   select(batch, time_point, DSB, allele, Cis_Location_Counts) %>%
   pivot_wider(names_from = time_point, values_from = Cis_Location_Counts, values_fill = 0) %>%
+  filter(!is.na(`0`) & !is.na(`120`)) %>%
   mutate(
     FoldChange_Cis_120_vs_0 = fc_ratio(`120`, `0`, eps = eps),
     Log2FC_Cis_120_vs_0 = log2(FoldChange_Cis_120_vs_0)
@@ -1473,6 +1463,7 @@ dat_fc_trans <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
   select(batch, time_point, DSB, allele, Trans_Location_Counts) %>%
   pivot_wider(names_from = time_point, values_from = Trans_Location_Counts, values_fill = 0) %>%
+  filter(!is.na(`0`) & !is.na(`120`)) %>%
   mutate(
     FoldChange_Trans_120_vs_0 = fc_ratio(`120`, `0`, eps = eps),
     Log2FC_Trans_120_vs_0 = log2(FoldChange_Trans_120_vs_0)

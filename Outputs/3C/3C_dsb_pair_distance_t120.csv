@@ -1,0 +1,3 @@
+DSB,paired_dsb,pair_same_chrom,dsb_pair_distance_mb,pair_distance_type
+DSB1,DSB2,FALSE,NA,inter_chr
+DSB2,DSB1,FALSE,NA,inter_chr

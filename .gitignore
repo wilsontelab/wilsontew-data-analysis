@@ -1,2 +1,5 @@
 # Large generated artifact (exceeds GitHub file-size limit)
 Outputs/4C_python/best_alignments_per_read.csv
+
+Outputs/4C_python/FourC_Joey_Filtered/best_alignments_per_read_non_filtered.csv
+Outputs/4C_python/FourC_Joey_Filtered/best_alignments_per_read_q1_q2_filtered.csv
