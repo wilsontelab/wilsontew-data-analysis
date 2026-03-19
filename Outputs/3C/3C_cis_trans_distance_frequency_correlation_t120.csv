@@ -1,0 +1,5 @@
+DSB,channel,n_points,n_loci,spearman_rho
+DSB1,CIS,7,7,-0.14285714285714282
+DSB1,TRANS,1,1,NA
+DSB2,CIS,1,1,NA
+DSB2,TRANS,1,1,NA

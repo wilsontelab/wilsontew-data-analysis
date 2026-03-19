@@ -1,0 +1,3 @@
+DSB,induced_time_point,paired_dsb,pair_distance_type,dsb_pair_distance_mb,trans_count,cis_count,trans_fraction,spearman_rho
+DSB1,120,DSB2,inter_chr,NA,0,942807,0,NA
+DSB2,120,DSB1,inter_chr,NA,0,539805,0,NA

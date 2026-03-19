@@ -1,0 +1,11 @@
+{
+  "workbench.editorAssociations": {
+    "*.ipynb": "jupyter-notebook"
+  },
+  "notebook.cellEditorOptionsCustomizations": {
+    "editor.readOnly": false
+  },
+  "[r]": {
+    "editor.readOnly": false
+  }
+}
