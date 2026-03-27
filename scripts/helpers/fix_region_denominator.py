@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-NB_PATH = Path(__file__).resolve().parent / "ThreeC_OneShot_Report.ipynb"
+NB_PATH = Path(__file__).resolve().parents[2] / "notebooks" / "ThreeC_OneShot_Report.ipynb"
 MARKER = "# ---- Batch-wise CIS/TRANS locus frequencies + region broken/unbroken comparisons (T0 vs T120) ----"
 
 REPLACEMENT_BLOCK = [
