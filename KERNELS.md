@@ -10,8 +10,6 @@ Run this in any terminal:
 
 - `jupyter kernelspec list`
 
-Or open `00_Kernel_Check.ipynb` and run the first code cell.
-
 ## Recommended: one reproducible environment (conda)
 
 This repo includes `environment.yml` that installs:

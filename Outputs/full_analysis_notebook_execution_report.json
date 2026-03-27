@@ -1,0 +1,42 @@
+[
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\ThreeC_OneShot_Report.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  },
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\ThreeC_OneShot_Report_captioned.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  },
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\PD_OneShot_Report.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  },
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\PD_3C_4C_Combined_Report.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  },
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\FourC_OneShot_Python_Report.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  },
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\FourC_Joey_Filtered.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  },
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\FourC_Q1_Filtered_Analysis.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  },
+  {
+    "notebook": "c:\\Users\\dunnmk\\wilsontew-data-analysis\\notebooks\\full_analysis_notebooks\\FourC_Q1_Q2_Filtered_Analysis.ipynb",
+    "status": "FAIL",
+    "error": "TraitError(\"The 'kernel_name' trait of a NotebookClient instance expected a unicode string, not the NoneType None.\")"
+  }
+]

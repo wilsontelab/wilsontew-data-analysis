@@ -16,7 +16,6 @@ For multi-language Jupyter setup (R/Python/Java/C++ and notes on VBA), see:
 
 - `KERNELS.md`
 - `environment.yml` (reproducible conda environment)
-- `00_Kernel_Check.ipynb` (quick kernel inventory)
 
 ### VS Code + Jupyter (recommended)
 
