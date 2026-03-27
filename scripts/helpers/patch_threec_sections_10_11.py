@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
-NB_PATH = ROOT / "ThreeC_OneShot_Report.ipynb"
+NB_PATH = ROOT.parents[1] / "notebooks" / "ThreeC_OneShot_Report.ipynb"
 
 MARKER = "Batch-wise CIS/TRANS locus frequencies + region broken/unbroken comparisons (T0 vs T120)"
 

@@ -4,8 +4,10 @@ Helper script to insert Q1-filtered analysis cell into the notebook
 """
 import json
 import sys
+from pathlib import Path
 
-notebook_path = r"c:\Users\dunnmk\wilsontew-data-analysis\FourC_OneShot_Python_Report.ipynb"
+ROOT = Path(__file__).resolve().parents[2]
+notebook_path = ROOT / "notebooks" / "FourC_OneShot_Python_Report.ipynb"
 
 # Read the notebook
 with open(notebook_path, 'r', encoding='utf-8') as f:

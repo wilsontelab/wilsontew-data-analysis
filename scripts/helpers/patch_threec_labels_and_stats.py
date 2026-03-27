@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, List
 
 ROOT = Path(__file__).resolve().parent
-NB_PATH = ROOT / "ThreeC_OneShot_Report.ipynb"
+NB_PATH = ROOT.parents[1] / "notebooks" / "ThreeC_OneShot_Report.ipynb"
 
 MARKER_QC = "# ---- QC plots ----"
 MARKER_S7S9 = "# ---- Sections 7, 8, 9: contribution bars, FC bars, and log2FC-vs-AF scatters (cleaned) ----"
