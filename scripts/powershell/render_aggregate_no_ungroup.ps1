@@ -3,8 +3,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$inputRmd = Join-Path $projectRoot 'aggregate_no_ungroup.Rmd'
+$projectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$inputRmd = Join-Path $projectRoot 'reports\rmd\aggregate_no_ungroup.Rmd'
 
 if (-not (Test-Path $inputRmd)) {
   throw "Cannot find: $inputRmd"

@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-nb = json.loads(Path('ThreeC_OneShot_Report.ipynb').read_text(encoding='utf-8'))
+NB_PATH = Path(__file__).resolve().parents[2] / 'notebooks' / 'ThreeC_OneShot_Report.ipynb'
+nb = json.loads(NB_PATH.read_text(encoding='utf-8'))
 
 needles = [
     'geom_smooth',

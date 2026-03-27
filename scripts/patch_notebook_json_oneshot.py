@@ -22,8 +22,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET_NOTEBOOK = ROOT / "FourC_OneShot_Python_Report.ipynb"
-FILTERED_SOURCE_SCRIPT = ROOT / "run_filtered_analysis.py"
+TARGET_NOTEBOOK = ROOT / "notebooks" / "FourC_OneShot_Python_Report.ipynb"
+FILTERED_SOURCE_SCRIPT = ROOT / "scripts" / "helpers" / "run_filtered_analysis.py"
 
 
 def _line_list(text: str) -> list[str]:
