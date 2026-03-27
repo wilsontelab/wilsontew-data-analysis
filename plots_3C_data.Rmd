@@ -133,6 +133,18 @@ combo_dsb_map <- list(
   "DSB2_CIS" = c("UPDATE_DSB2", "UPDATE_DSB2")
 )
 
+# IMPORTANT design constraint for this project:
+# DSB2 is batch-specific (batch 4 = ChrVII, batch 6 = ChrIV, batch 8 = ChrXV).
+# Do not run this section with placeholder mappings, because it yields non-biological
+# normalization values and mixes incompatible DSB2 definitions.
+if (any(stringr::str_detect(unlist(combo_dsb_map), "^UPDATE_"))) {
+  stop(
+    "combo_dsb_map still contains placeholder values (UPDATE_*). ",
+    "Set real DSB1/DSB2 loci before running DSB normalization. ",
+    "Keep mappings batch-specific to match the experimental design."
+  )
+}
+
 uncuttable_pattern <- "uncuttable|control|noncut"
 
 # STEP 3: Safe DSB normalization with list-columns + rowwise

@@ -1,0 +1,7 @@
+stage,n_rows,n_loci,total_count
+t120_rows_after_basic_filters,298,29,1823989
+rows_with_valid_dsb_label,104,27,1758600
+rows_with_canonical_allele,104,27,1758600
+rows_with_coordinate_match_direct,88,22,918692
+rows_with_coordinate_match_chr_bucket_rescue,8,3,563920
+rows_in_cis_channel_with_coords,96,22,1482612

@@ -1,0 +1,2 @@
+sample,sam_path,reads_total_in_sam,reads_mapped_in_sam,reads_filtered_ilv1_short_match,reads_filtered_sequence_motif,reads_best_selected
+batch4_2_4C_t0,C:\Users\dunnmk\Downloads\batch4_2_4C_t0_final_filtered.sam,1148210,1084604,0,78703,299630

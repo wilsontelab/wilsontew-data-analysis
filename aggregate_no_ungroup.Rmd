@@ -51,6 +51,7 @@ COL_DSB <- "DSB"
 COL_ALLELE <- "allele"
 COL_COMBO <- "combo"
 COL_CIS_TRANS <- "cis_trans"
+COL_REPLICATE <- "replicate"
 COL_REPEAT <- "repeat"
 COL_COUNT <- "count"
 
@@ -62,6 +63,17 @@ COL_COUNT_NORM <- "count_norm"
 combos_4 <- c("A_to_B", "C_to_D", "A_to_D", "C_to_B")
 cis_combos <- c("A_to_B", "C_to_D")
 trans_combos <- c("A_to_D", "C_to_B")
+
+# Experimental design metadata (3C pooled-strain experiment)
+# NOTE:
+# - DSB1 varies by strain and is sampled over the common locus panel.
+# - DSB2 is batch-specific and MUST NOT be pooled across batches in one "DSB2" meta-group.
+design_dsb2_by_batch <- tibble::tribble(
+  ~batch, ~dsb2_chrom,
+  "4", "VII",
+  "6", "IV",
+  "8", "XV"
+)
 
 # Controls
 # Guideline #2: NO_CUT control is used to show baseline growth in media.
@@ -149,6 +161,28 @@ summarize_intact_ssa_ab <- function(dat,
       .groups = "drop"
     )
 }
+
+# ---- Replicate-aware summary helper (mean/sd/sem across replicates) ----
+summarize_across_replicates <- function(df_rep,
+                                       group_cols_no_rep,
+                                       metrics,
+                                       replicate_col = COL_REPLICATE) {
+  df_rep %>%
+    group_by(across(all_of(group_cols_no_rep))) %>%
+    summarise(
+      n_reps = n_distinct(.data[[replicate_col]]),
+      across(all_of(metrics), ~ mean(.x, na.rm = TRUE), .names = "{.col}_mean"),
+      across(all_of(metrics), ~ sd(.x, na.rm = TRUE), .names = "{.col}_sd"),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      across(
+        ends_with("_sd"),
+        ~ .x / sqrt(n_reps),
+        .names = "{stringr::str_replace(.col, '_sd$', '_sem')}"
+      )
+    )
+}
 ```
 ***
 
@@ -161,10 +195,25 @@ Reads all `_summary.csv` files from `folder` and combines them into a single mas
 - `raw_list`: list of per-file data frames
 - `dat_raw`: combined data frame
 ```{r import-csv}
-folder <- "C:\\Users\\dunnmk\\University of Michigan Dropbox\\MED-WILSONTELAB\\wilsontelab box\\Common\\Projects\\Yeast Aim 3\\3C Sequencing Data\\3C_summary"
-files  <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
-raw_list <- lapply(files, read_csv)
-dat_raw <- bind_rows(raw_list)
+# Local-first path (edit if needed)
+# - Default: ./ThreeC_Data (relative to the folder you opened)
+# - Override: set WILSONTEW_3C_FOLDER
+folder <- Sys.getenv("WILSONTEW_3C_FOLDER", unset = file.path(getwd(), "ThreeC_Data"))
+folder <- normalizePath(folder, winslash = "/", mustWork = FALSE)
+if (!dir.exists(folder)) dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+message("Using folder: ", folder)
+
+files <- list.files(folder, pattern = "_summary\\.csv$", full.names = TRUE)
+if (length(files) == 0) {
+  stop(
+    "No *_summary.csv files found in folder: ", folder,
+    "\n\nTo run locally, either copy your 3C summary CSVs into that folder,",
+    " or set WILSONTEW_3C_FOLDER to the directory that contains them."
+  )
+}
+
+raw_list <- lapply(files, function(f) readr::read_csv(f, show_col_types = FALSE))
+dat_raw <- dplyr::bind_rows(raw_list)
 
 # NOTE: do not modify the imported raw table; use a working copy for all downstream computations.
 dat <- dat_raw %>%
@@ -173,6 +222,8 @@ dat <- dat_raw %>%
     !!COL_ALLELE := as.character(.data[[COL_ALLELE]]),
     !!COL_COMBO := as.character(.data[[COL_COMBO]]),
     !!COL_CIS_TRANS := as.character(.data[[COL_CIS_TRANS]]),
+    # Replicate is a true replicate index (numeric)
+    !!COL_REPLICATE := readr::parse_integer(as.character(.data[[COL_REPLICATE]])),
     # Make time_point safe for filtering (handles numeric, factor, or strings like "T120")
     !!COL_TIME_POINT := readr::parse_number(as.character(.data[[COL_TIME_POINT]]))
   )
@@ -181,10 +232,36 @@ dat <- dat_raw %>%
 dat <- dat %>%
   filter(.data[[COL_TIME_POINT]] %in% c(0, 120))
 
+# ---- Design checks: pooled-strain / batch-specific DSB2 assumptions ----
+timepoint_coverage <- dat %>%
+  distinct(.data[[COL_BATCH]], .data[[COL_DSB]], .data[[COL_REPLICATE]], .data[[COL_TIME_POINT]]) %>%
+  group_by(.data[[COL_BATCH]], .data[[COL_DSB]], .data[[COL_REPLICATE]]) %>%
+  summarise(
+    has_t0 = any(.data[[COL_TIME_POINT]] == 0),
+    has_t120 = any(.data[[COL_TIME_POINT]] == 120),
+    .groups = "drop"
+  )
+
+missing_timepoint_pairs <- timepoint_coverage %>%
+  filter(!(has_t0 & has_t120))
+
+if (nrow(missing_timepoint_pairs) > 0) {
+  warning(
+    "Some batch × DSB × replicate groups are missing T0 or T120. ",
+    "Paired fold-change/correlation sections will automatically drop incomplete groups."
+  )
+}
+
+design_batch_table <- dat %>%
+  distinct(.data[[COL_BATCH]]) %>%
+  mutate(batch = as.character(.data[[COL_BATCH]])) %>%
+  left_join(design_dsb2_by_batch, by = "batch") %>%
+  arrange(batch)
+
 # ---- Guideline #3: spike-in scaling (batch × time_point) ----
 spike_totals <- dat %>%
   filter(.data[[COL_ALLELE]] == SPIKEIN_ALLELE, .data[[COL_COMBO]] %in% combos_4) %>%
-  group_by(across(all_of(c(COL_BATCH, COL_TIME_POINT)))) %>%
+  group_by(across(all_of(c(COL_BATCH, COL_TIME_POINT, COL_REPLICATE)))) %>%
   summarise(SpikeIn_Counts = sum(.data[[COL_COUNT]], na.rm = TRUE), .groups = "drop")
 
 spike_ref <- spike_totals %>%
@@ -208,8 +285,8 @@ spike_factors <- spike_totals %>%
 
 dat <- dat %>%
   left_join(
-    spike_factors %>% select(all_of(c(COL_BATCH, COL_TIME_POINT)), SpikeIn_Scale, SpikeIn_Flag),
-    by = c(COL_BATCH, COL_TIME_POINT)
+    spike_factors %>% select(all_of(c(COL_BATCH, COL_TIME_POINT, COL_REPLICATE)), SpikeIn_Scale, SpikeIn_Flag),
+    by = c(COL_BATCH, COL_TIME_POINT, COL_REPLICATE)
   ) %>%
   mutate(
     SpikeIn_Scale = replace_na(SpikeIn_Scale, 1.0),
@@ -220,11 +297,11 @@ dat <- dat %>%
 # ---- Guideline #2: NO_CUT baseline growth signal ----
 nocut_denoms <- dat %>%
   filter(.data[[COL_ALLELE]] == NOCUT_ALLELE, .data[[COL_COMBO]] %in% combos_4) %>%
-  group_by(across(all_of(c(COL_BATCH, COL_TIME_POINT, COL_DSB, COL_COMBO, COL_REPEAT)))) %>%
+  group_by(across(all_of(c(COL_BATCH, COL_TIME_POINT, COL_DSB, COL_COMBO, COL_REPEAT, COL_REPLICATE)))) %>%
   summarise(NoCut_Denom = sum(.data[[COL_COUNT_SPIKE_SCALED]], na.rm = TRUE), .groups = "drop")
 
 dat <- dat %>%
-  left_join(nocut_denoms, by = c(COL_BATCH, COL_TIME_POINT, COL_DSB, COL_COMBO, COL_REPEAT)) %>%
+  left_join(nocut_denoms, by = c(COL_BATCH, COL_TIME_POINT, COL_DSB, COL_COMBO, COL_REPEAT, COL_REPLICATE)) %>%
   mutate(
     # Doubly-normalized counts (optional for some plots): spike-in scaled, then normalized to matched NO_CUT denom.
     !!COL_COUNT_NORM := if_else(!is.na(NoCut_Denom) & NoCut_Denom > 0,
@@ -241,13 +318,21 @@ dat |> head(10) |> knitr::kable(caption = "Preview: combined `_summary.csv` rows
 
 # Quick QC: spike-in totals and applied scale factors
 spike_factors %>%
-  arrange(time_point, batch) %>%
-  knitr::kable(caption = "Spike-in totals and scaling factors by batch × time_point")
+  arrange(time_point, batch, replicate) %>%
+  knitr::kable(caption = "Spike-in totals and scaling factors by batch × time_point × replicate")
 
 nocut_denoms %>%
-  arrange(time_point, batch, DSB, `repeat`, combo) %>%
+  arrange(time_point, batch, replicate, DSB, `repeat`, combo) %>%
   head(20) %>%
-  knitr::kable(caption = "NO_CUT denominators (spike-scaled) by batch × time_point × DSB × repeat × combo (first 20)")
+  knitr::kable(caption = "NO_CUT denominators (spike-scaled) by batch × time_point × replicate × DSB × repeat × combo (first 20)")
+
+design_batch_table %>%
+  knitr::kable(caption = "Batch-specific DSB2 chromosome map used for interpretation (do not pool DSB2 across batches)")
+
+if (nrow(missing_timepoint_pairs) > 0) {
+  missing_timepoint_pairs %>%
+    knitr::kable(caption = "Groups with incomplete T0/T120 pairing (excluded from paired fold-change/correlation calculations)")
+}
 
 ```
 ***
@@ -258,14 +343,43 @@ nocut_denoms %>%
 Purpose- Calculate percentages from aggregated counts
 
 ```{r aggregate-counts}
-dat_agg_counts <- summarize_combo4_counts_pct(
+# (A) Pooled across replicates (old behavior)
+dat_agg_counts_pooled <- summarize_combo4_counts_pct(
   dat_bio,
   count_col = COL_COUNT_SPIKE_SCALED,
   group_cols = c(COL_BATCH, COL_TIME_POINT, COL_DSB),
   combo_col = COL_COMBO
 )
+
+# (B) Replicate-level summary
+dat_agg_counts_rep <- summarize_combo4_counts_pct(
+  dat_bio,
+  count_col = COL_COUNT_SPIKE_SCALED,
+  group_cols = c(COL_BATCH, COL_TIME_POINT, COL_DSB, COL_REPLICATE),
+  combo_col = COL_COMBO
+)
+
+# (C) Across-replicates summary (mean/sd/sem + n_reps)
+metrics_counts <- c(
+  "Total_Counts", "Cis_Counts", "Trans_Counts",
+  "A_to_B_Counts", "C_to_D_Counts", "A_to_D_Counts", "C_to_B_Counts",
+  "Percent_Cis", "Percent_Trans",
+  "Percent_A_to_B", "Percent_C_to_D", "Percent_A_to_D", "Percent_C_to_B"
+)
+
+dat_agg_counts <- summarize_across_replicates(
+  df_rep = dat_agg_counts_rep,
+  group_cols_no_rep = c(COL_BATCH, COL_TIME_POINT, COL_DSB),
+  metrics = metrics_counts
+)
+
 str(dat_agg_counts)
-dat_agg_counts |> head(10) |> knitr::kable(caption = "Aggregated counts + derived percentages by batch × time_point × DSB (first 10)")
+dat_agg_counts |> head(10) |> knitr::kable(
+  caption = "Replicate-aware summary (mean/sd/sem across replicates) by batch × time_point × DSB (first 10)"
+)
+dat_agg_counts_pooled |> head(10) |> knitr::kable(
+  caption = "Pooled summary (all replicates combined) by batch × time_point × DSB (first 10)"
+)
 ```
 
 The table above is now aggregated to batch × time_point × DSB.
@@ -652,30 +766,24 @@ These summaries use the $A/(A+B)$ form (same style as `MD_PD_Analysis.Rmd`):
 
 ```{r ab-normalization-plots, message=FALSE, warning=FALSE}
 group_cols_ab <- c(COL_BATCH, COL_TIME_POINT, COL_DSB)
+group_cols_ab_rep <- c(COL_BATCH, COL_TIME_POINT, COL_DSB, COL_REPLICATE)
 
-cis_trans_ab <- summarize_cis_trans_ab(
+# Replicate-level summaries
+cis_trans_ab_rep <- summarize_cis_trans_ab(
   dat_bio,
   count_col = COL_COUNT_NORM,
-  group_cols = group_cols_ab
+  group_cols = group_cols_ab_rep
 )
 
-intact_ssa_ab <- summarize_intact_ssa_ab(
+intact_ssa_ab_rep <- summarize_intact_ssa_ab(
   dat_bio,
   count_col = COL_COUNT_NORM,
-  group_cols = group_cols_ab
+  group_cols = group_cols_ab_rep
 )
 
-ab_joined <- cis_trans_ab %>%
-  left_join(intact_ssa_ab, by = group_cols_ab)
-
-ab_joined %>%
-  arrange(.data[[COL_BATCH]], .data[[COL_DSB]], .data[[COL_TIME_POINT]]) %>%
-  head(20) %>%
-  knitr::kable(caption = "Preview: A/(A+B) normalized summaries (first 20 rows)")
-
-# Plot 1: CIS vs TRANS over time (each facet is batch × DSB)
-cis_trans_long <- ab_joined %>%
-  select(any_of(group_cols_ab), Percent_Cis, Percent_Trans) %>%
+# Replicate-level long form for plotting
+cis_trans_long_rep <- cis_trans_ab_rep %>%
+  select(any_of(group_cols_ab_rep), Percent_Cis, Percent_Trans) %>%
   pivot_longer(
     cols = c(Percent_Cis, Percent_Trans),
     names_to = "Class",
@@ -686,17 +794,28 @@ cis_trans_long <- ab_joined %>%
     time_point = as.numeric(as.character(.data[[COL_TIME_POINT]]))
   )
 
-if (nrow(cis_trans_long) == 0 || !any(!is.na(cis_trans_long$Percent))) {
-  message("[2.6 A/(A+B)] No usable CIS/TRANS% values using count_norm; falling back to spike-scaled counts.")
-
-  cis_trans_ab_fb <- summarize_cis_trans_ab(
-    dat_bio,
-    count_col = COL_COUNT_SPIKE_SCALED,
-    group_cols = group_cols_ab
+intact_ssa_long_rep <- intact_ssa_ab_rep %>%
+  select(any_of(group_cols_ab_rep), Percent_Intact, Percent_SSA) %>%
+  pivot_longer(
+    cols = c(Percent_Intact, Percent_SSA),
+    names_to = "Class",
+    values_to = "Percent"
+  ) %>%
+  mutate(
+    Class = recode(Class, Percent_Intact = "INTACT", Percent_SSA = "SSA"),
+    time_point = as.numeric(as.character(.data[[COL_TIME_POINT]]))
   )
 
-  cis_trans_long <- cis_trans_ab_fb %>%
-    select(any_of(group_cols_ab), Percent_Cis, Percent_Trans) %>%
+# Fallback to spike-scaled counts if count_norm yields no usable values
+if (nrow(cis_trans_long_rep) == 0 || !any(!is.na(cis_trans_long_rep$Percent))) {
+  message("[2.6 A/(A+B)] No usable CIS/TRANS% values using count_norm; falling back to spike-scaled counts.")
+  cis_trans_ab_rep <- summarize_cis_trans_ab(
+    dat_bio,
+    count_col = COL_COUNT_SPIKE_SCALED,
+    group_cols = group_cols_ab_rep
+  )
+  cis_trans_long_rep <- cis_trans_ab_rep %>%
+    select(any_of(group_cols_ab_rep), Percent_Cis, Percent_Trans) %>%
     pivot_longer(
       cols = c(Percent_Cis, Percent_Trans),
       names_to = "Class",
@@ -708,48 +827,15 @@ if (nrow(cis_trans_long) == 0 || !any(!is.na(cis_trans_long$Percent))) {
     )
 }
 
-if (nrow(cis_trans_long) > 0) {
-  p_cis_trans_time <- ggplot(cis_trans_long, aes(x = time_point, y = Percent, color = Class, group = Class)) +
-    geom_line(linewidth = 1.1) +
-    geom_point(size = 2.5) +
-    facet_grid(.data[[COL_DSB]] ~ .data[[COL_BATCH]], scales = "free_x") +
-    scale_y_continuous(limits = c(0, 100)) +
-    theme_bw() +
-    labs(
-      title = "CIS vs TRANS over time (A/(A+B) normalization)",
-      x = "Time point",
-      y = "% of (CIS + TRANS)",
-      color = ""
-    )
-  print(p_cis_trans_time)
-} else {
-  message("[2.6 A/(A+B)] cis_trans_long is empty; no CIS/TRANS A/(A+B) plot was produced.")
-}
-
-# Plot 2: INTACT vs SSA over time (each facet is batch × DSB)
-intact_ssa_long <- ab_joined %>%
-  select(any_of(group_cols_ab), Percent_Intact, Percent_SSA) %>%
-  pivot_longer(
-    cols = c(Percent_Intact, Percent_SSA),
-    names_to = "Class",
-    values_to = "Percent"
-  ) %>%
-  mutate(
-    Class = recode(Class, Percent_Intact = "INTACT", Percent_SSA = "SSA"),
-    time_point = as.numeric(as.character(.data[[COL_TIME_POINT]]))
-  )
-
-if (nrow(intact_ssa_long) == 0 || !any(!is.na(intact_ssa_long$Percent))) {
+if (nrow(intact_ssa_long_rep) == 0 || !any(!is.na(intact_ssa_long_rep$Percent))) {
   message("[2.6 A/(A+B)] No usable INTACT/SSA% values using count_norm; falling back to spike-scaled counts.")
-
-  intact_ssa_ab_fb <- summarize_intact_ssa_ab(
+  intact_ssa_ab_rep <- summarize_intact_ssa_ab(
     dat_bio,
     count_col = COL_COUNT_SPIKE_SCALED,
-    group_cols = group_cols_ab
+    group_cols = group_cols_ab_rep
   )
-
-  intact_ssa_long <- intact_ssa_ab_fb %>%
-    select(any_of(group_cols_ab), Percent_Intact, Percent_SSA) %>%
+  intact_ssa_long_rep <- intact_ssa_ab_rep %>%
+    select(any_of(group_cols_ab_rep), Percent_Intact, Percent_SSA) %>%
     pivot_longer(
       cols = c(Percent_Intact, Percent_SSA),
       names_to = "Class",
@@ -761,22 +847,172 @@ if (nrow(intact_ssa_long) == 0 || !any(!is.na(intact_ssa_long$Percent))) {
     )
 }
 
-if (nrow(intact_ssa_long) > 0) {
-  p_intact_ssa_time <- ggplot(intact_ssa_long, aes(x = time_point, y = Percent, color = Class, group = Class)) +
-    geom_line(linewidth = 1.1) +
-    geom_point(size = 2.5) +
+# Across-replicates summaries (mean ± SEM)
+cis_trans_ab_mean <- summarize_across_replicates(
+  df_rep = cis_trans_ab_rep,
+  group_cols_no_rep = group_cols_ab,
+  metrics = c("Percent_Cis", "Percent_Trans"),
+  replicate_col = COL_REPLICATE
+)
+
+intact_ssa_ab_mean <- summarize_across_replicates(
+  df_rep = intact_ssa_ab_rep,
+  group_cols_no_rep = group_cols_ab,
+  metrics = c("Percent_Intact", "Percent_SSA"),
+  replicate_col = COL_REPLICATE
+)
+
+# Mean long form for plotting
+cis_trans_long_mean <- cis_trans_ab_mean %>%
+  transmute(
+    batch = .data[[COL_BATCH]],
+    DSB = .data[[COL_DSB]],
+    time_point = as.numeric(as.character(.data[[COL_TIME_POINT]])),
+    n_reps,
+    CIS_mean = Percent_Cis_mean,
+    CIS_sem = Percent_Cis_sem,
+    TRANS_mean = Percent_Trans_mean,
+    TRANS_sem = Percent_Trans_sem
+  ) %>%
+  pivot_longer(
+    cols = c(CIS_mean, CIS_sem, TRANS_mean, TRANS_sem),
+    names_to = c("Class", ".value"),
+    names_pattern = "(CIS|TRANS)_(mean|sem)"
+  ) %>%
+  rename(Percent_mean = mean, Percent_sem = sem)
+
+intact_ssa_long_mean <- intact_ssa_ab_mean %>%
+  transmute(
+    batch = .data[[COL_BATCH]],
+    DSB = .data[[COL_DSB]],
+    time_point = as.numeric(as.character(.data[[COL_TIME_POINT]])),
+    n_reps,
+    INTACT_mean = Percent_Intact_mean,
+    INTACT_sem = Percent_Intact_sem,
+    SSA_mean = Percent_SSA_mean,
+    SSA_sem = Percent_SSA_sem
+  ) %>%
+  pivot_longer(
+    cols = c(INTACT_mean, INTACT_sem, SSA_mean, SSA_sem),
+    names_to = c("Class", ".value"),
+    names_pattern = "(INTACT|SSA)_(mean|sem)"
+  ) %>%
+  rename(Percent_mean = mean, Percent_sem = sem)
+
+# Preview table
+cis_trans_ab_mean %>%
+  arrange(.data[[COL_BATCH]], .data[[COL_DSB]], .data[[COL_TIME_POINT]]) %>%
+  head(20) %>%
+  knitr::kable(caption = "Preview: A/(A+B) normalized summaries across replicates (mean/sd/sem; first 20 rows)")
+
+# Plot 1: CIS vs TRANS over time (replicates + mean ± SEM)
+if (nrow(cis_trans_long_rep) > 0) {
+  p_cis_trans_time <- ggplot() +
+    geom_line(
+      data = cis_trans_long_rep,
+      aes(
+        x = time_point,
+        y = Percent,
+        color = Class,
+        group = interaction(Class, .data[[COL_REPLICATE]])
+      ),
+      alpha = 0.35,
+      linewidth = 0.8
+    ) +
+    geom_point(
+      data = cis_trans_long_rep,
+      aes(x = time_point, y = Percent, color = Class),
+      alpha = 0.5,
+      size = 1.7
+    ) +
+    geom_errorbar(
+      data = cis_trans_long_mean,
+      aes(
+        x = time_point,
+        ymin = Percent_mean - Percent_sem,
+        ymax = Percent_mean + Percent_sem,
+        color = Class
+      ),
+      width = 6,
+      linewidth = 0.7
+    ) +
+    geom_line(
+      data = cis_trans_long_mean,
+      aes(x = time_point, y = Percent_mean, color = Class, group = Class),
+      linewidth = 1.3
+    ) +
+    geom_point(
+      data = cis_trans_long_mean,
+      aes(x = time_point, y = Percent_mean, color = Class),
+      size = 2.4
+    ) +
     facet_grid(.data[[COL_DSB]] ~ .data[[COL_BATCH]], scales = "free_x") +
     scale_y_continuous(limits = c(0, 100)) +
     theme_bw() +
     labs(
-      title = "INTACT vs SSA over time (A/(A+B) normalization)",
+      title = "CIS vs TRANS over time (replicates + mean ± SEM; A/(A+B) normalization)",
+      x = "Time point",
+      y = "% of (CIS + TRANS)",
+      color = ""
+    )
+  print(p_cis_trans_time)
+} else {
+  message("[2.6 A/(A+B)] cis_trans_long_rep is empty; no CIS/TRANS A/(A+B) plot was produced.")
+}
+
+# Plot 2: INTACT vs SSA over time (replicates + mean ± SEM)
+if (nrow(intact_ssa_long_rep) > 0) {
+  p_intact_ssa_time <- ggplot() +
+    geom_line(
+      data = intact_ssa_long_rep,
+      aes(
+        x = time_point,
+        y = Percent,
+        color = Class,
+        group = interaction(Class, .data[[COL_REPLICATE]])
+      ),
+      alpha = 0.35,
+      linewidth = 0.8
+    ) +
+    geom_point(
+      data = intact_ssa_long_rep,
+      aes(x = time_point, y = Percent, color = Class),
+      alpha = 0.5,
+      size = 1.7
+    ) +
+    geom_errorbar(
+      data = intact_ssa_long_mean,
+      aes(
+        x = time_point,
+        ymin = Percent_mean - Percent_sem,
+        ymax = Percent_mean + Percent_sem,
+        color = Class
+      ),
+      width = 6,
+      linewidth = 0.7
+    ) +
+    geom_line(
+      data = intact_ssa_long_mean,
+      aes(x = time_point, y = Percent_mean, color = Class, group = Class),
+      linewidth = 1.3
+    ) +
+    geom_point(
+      data = intact_ssa_long_mean,
+      aes(x = time_point, y = Percent_mean, color = Class),
+      size = 2.4
+    ) +
+    facet_grid(.data[[COL_DSB]] ~ .data[[COL_BATCH]], scales = "free_x") +
+    scale_y_continuous(limits = c(0, 100)) +
+    theme_bw() +
+    labs(
+      title = "INTACT vs SSA over time (replicates + mean ± SEM; A/(A+B) normalization)",
       x = "Time point",
       y = "% of (INTACT + SSA)",
       color = ""
     )
   print(p_intact_ssa_time)
 } else {
-  message("[2.6 A/(A+B)] intact_ssa_long is empty; no INTACT/SSA A/(A+B) plot was produced.")
+  message("[2.6 A/(A+B)] intact_ssa_long_rep is empty; no INTACT/SSA A/(A+B) plot was produced.")
 }
 ```
 
@@ -1192,66 +1428,10 @@ if (nrow(dat_wide_af) > 0) {
   plot_cor_by_batch(dat_wide_af, cor_stats)
 }
 
-# Pooled-across-batches view (sum counts then recompute frequencies)
-dat_allele_freq_combo_overall <- dat_bio %>%
-  filter(.data[[COL_COMBO]] %in% combos_4) %>%
-  group_by(across(all_of(c(COL_DSB, COL_COMBO, COL_TIME_POINT, COL_ALLELE)))) %>%
-  summarise(Allele_Counts = sum(.data[[COL_COUNT_NORM]], na.rm = TRUE), .groups = "drop") %>%
-  group_by(across(all_of(c(COL_DSB, COL_COMBO, COL_TIME_POINT)))) %>%
-  mutate(
-    Total_Counts = sum(Allele_Counts, na.rm = TRUE),
-    Allele_Frequency = if_else(Total_Counts > 0, Allele_Counts / Total_Counts, NA_real_)
-  ) %>%
-  ungroup() %>%
-  mutate(time_point = as.numeric(as.character(.data[[COL_TIME_POINT]]))) %>%
-  filter(time_point %in% timepoints_compare)
-
-dat_wide_overall <- dat_allele_freq_combo_overall %>%
-  select(all_of(c(COL_DSB, COL_COMBO, COL_ALLELE)), time_point, Allele_Frequency) %>%
-  mutate(tp = paste0("t", time_point)) %>%
-  select(-time_point) %>%
-  tidyr::pivot_wider(names_from = tp, values_from = Allele_Frequency)
-
-cor_stats_overall <- dat_wide_overall %>%
-  group_by(across(all_of(c(COL_DSB, COL_COMBO)))) %>%
-  summarise(
-    n_pairs = sum(!is.na(t0) & !is.na(t120)),
-    r = if_else(n_pairs >= 3, cor(t0, t120, use = "complete.obs", method = "pearson"), NA_real_),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    label = if_else(
-      is.na(r),
-      paste0("n=", n_pairs),
-      paste0("r=", round(r, 3), "\n", "n=", n_pairs)
-    ),
-    x = 0.02,
-    y = 0.98
-  )
-
-if (nrow(dat_wide_overall) > 0) {
-  p_overall <- ggplot(dat_wide_overall, aes(x = t0, y = t120)) +
-    geom_abline(slope = 1, intercept = 0, linewidth = 0.7, linetype = "dashed", color = "grey50") +
-    geom_point(alpha = 0.75, size = 1.8) +
-    facet_grid(.data[[COL_COMBO]] ~ .data[[COL_DSB]]) +
-    geom_text(
-      data = cor_stats_overall,
-      aes(x = x, y = y, label = label),
-      inherit.aes = FALSE,
-      hjust = 0,
-      vjust = 1,
-      size = 3
-    ) +
-    scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
-    scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
-    theme_bw() +
-    labs(
-      title = "Pearson correlation of allele frequencies (t=0 vs t=120) pooled across batches",
-      x = "Allele frequency at t=0",
-      y = "Allele frequency at t=120"
-    )
-  print(p_overall)
-}
+# IMPORTANT DESIGN NOTE:
+# We intentionally do NOT produce a single pooled-across-batches DSB2 correlation panel.
+# DSB2 is batch-specific in this experiment (batch 4 = ChrVII, 6 = ChrIV, 8 = ChrXV),
+# so pooling DSB2 across batches creates a synthetic/non-biological "DSB2" group.
 ```
 
 ---
@@ -1273,6 +1453,7 @@ dat_fc_cis <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
   select(batch, time_point, DSB, allele, Cis_Location_Counts) %>%
   pivot_wider(names_from = time_point, values_from = Cis_Location_Counts, values_fill = 0) %>%
+  filter(!is.na(`0`) & !is.na(`120`)) %>%
   mutate(
     FoldChange_Cis_120_vs_0 = fc_ratio(`120`, `0`, eps = eps),
     Log2FC_Cis_120_vs_0 = log2(FoldChange_Cis_120_vs_0)
@@ -1282,6 +1463,7 @@ dat_fc_trans <- dat_norm_combo %>%
   filter(time_point %in% c(0, 120)) %>%
   select(batch, time_point, DSB, allele, Trans_Location_Counts) %>%
   pivot_wider(names_from = time_point, values_from = Trans_Location_Counts, values_fill = 0) %>%
+  filter(!is.na(`0`) & !is.na(`120`)) %>%
   mutate(
     FoldChange_Trans_120_vs_0 = fc_ratio(`120`, `0`, eps = eps),
     Log2FC_Trans_120_vs_0 = log2(FoldChange_Trans_120_vs_0)

@@ -1,0 +1,28 @@
+name: wilsontew-jupyter-kernels
+channels:
+  - conda-forge
+dependencies:
+  # Core Jupyter
+  - python=3.11
+  - jupyterlab
+  - notebook
+  - ipykernel
+
+  # R (IRkernel)
+  - r-base
+  - r-irkernel
+  - r-tidyverse
+  - r-knitr
+
+  # Java (IJava) + JDK
+  - openjdk
+  - ijava
+
+  # C++
+  # NOTE: A full C++ Jupyter kernel (e.g., xeus-cling) is not reliably available on
+  # Windows via conda-forge. If you need a C++ kernel, the most reliable approach
+  # is to use WSL2/Linux and install xeus-cling there.
+
+  # Optional: SoS multi-language “meta-kernel”
+  - sos
+  - sos-notebook

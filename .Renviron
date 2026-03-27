@@ -2,3 +2,14 @@
 # This makes rmarkdown::render() find Pandoc on Windows when using Quarto.
 # Quarto bundles pandoc.exe in: <quarto>/bin/tools
 RSTUDIO_PANDOC=C:/Users/dunnmk/AppData/Local/Programs/Quarto/bin/tools
+
+# Optional: point the notebook at the folder containing your PD summary CSVs.
+# Use forward slashes on Windows.
+# Example:
+# WILSONTEW_PD_FOLDER=C:/Users/dunnmk/path/to/PD_summaries
+#
+# If unset, the notebook uses: ./PD_Data
+WILSONTEW_PD_FOLDER=C:/Users/dunnmk/University of Michigan Dropbox/MED-WILSONTELAB/wilsontelab box/Common/Projects/Yeast Aim 3/Sequencing/PD Data
+
+# Optional: 3C summary folder (used by some 3C aggregation scripts/Rmd)
+WILSONTEW_3C_FOLDER=C:/Users/dunnmk/University of Michigan Dropbox/MED-WILSONTELAB/wilsontelab box/Common/Projects/Yeast Aim 3/3C Sequencing Data/3C_summary

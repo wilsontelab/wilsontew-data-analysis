@@ -1,0 +1,3 @@
+replicate,n_pairs,mean_t0,mean_t120,mean_diff_t120_minus_t0,p_value,significance
+Rep 1,3,33.333333333333336,33.333333333333336,-5.918298258874207e-16,1,ns
+Rep 2,1,100,100,0,NA,ns
