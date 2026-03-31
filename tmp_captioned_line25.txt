@@ -1,1 +1,0 @@
-﻿    "This notebook reads from `WILSONTEW_3C_FOLDER` if set; otherwise it falls back to `./ThreeC_Data`.\n",

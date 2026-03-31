@@ -1,1 +1,0 @@
-﻿    "Current recommended 3C folder (from your setup):\n",

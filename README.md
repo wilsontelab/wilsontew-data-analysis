@@ -2,15 +2,64 @@
 
 Data analysis for TEW lab
 
-## 4C data location in this project
+## Running notebooks in order (PD → 3C → 4C)
 
-- **Raw 4C input data**: aligned `.sam` files specified in `SAM_SAMPLES` inside `FourC_OneShot_Python_Report.ipynb`.
-- **Processed 4C outputs**: written by that notebook to `Outputs/4C_python`.
-- **Combined PD+3C+4C notebook behavior**: `PD_3C_4C_Combined_Report.ipynb` reads 4C summary-style CSVs from `WILSONTEW_4C_FOLDER` (default `Outputs/4C_python`) when compatible files are present; otherwise it falls back to a proxy 4C layer.
+Run these notebooks from the repository root in this order:
 
-## Running the R notebooks
+1. `notebooks/full_analysis_notebooks/PD_OneShot_Report.ipynb`
+2. `notebooks/full_analysis_notebooks/ThreeC_OneShot_Report.ipynb`
+3. `notebooks/full_analysis_notebooks/FourC_OneShot_Python_Report.ipynb`
 
-The notebooks and `.Rmd` files in this repo are written in **R**.
+> Optional integration notebook after all three are complete:
+> `notebooks/full_analysis_notebooks/PD_3C_4C_Combined_Report.ipynb`
+
+### 1) PD notebook
+
+- **Notebook**: `notebooks/full_analysis_notebooks/PD_OneShot_Report.ipynb`
+- **Kernel**: R (`R (wilsontew)` / IRkernel)
+- **Data processed (relative in-repo path)**:
+  - Primary input folder: `data/raw/Input_Data/PD_data`
+  - Fallback local folder (if using env var defaults): `PD_Data`
+- **What it writes**:
+  - Notebook-local artifacts: `notebooks/full_analysis_notebooks/Outputs/PD`
+
+### 2) 3C notebook
+
+- **Notebook**: `notebooks/full_analysis_notebooks/ThreeC_OneShot_Report.ipynb`
+- **Kernel**: R (`R (wilsontew)` / IRkernel)
+- **Data processed (relative in-repo path)**:
+  - Primary input folder: `data/raw/Input_Data/3C`
+  - Fallback local folder (if using env var defaults): `ThreeC_Data`
+  - Primer/DSB metadata used by mapping steps: `data/raw/Insertion_Primers_for_Locations_of_DSBs.csv`
+- **What it writes**:
+  - Notebook-local artifacts: `notebooks/full_analysis_notebooks/Outputs/3C`
+  - Main exported summaries/figures: `Outputs/3C`
+
+### 3) 4C notebook
+
+- **Notebook**: `notebooks/full_analysis_notebooks/FourC_OneShot_Python_Report.ipynb`
+- **Kernel**: Python (`Python (wilsontew)`)
+- **Data processed (relative in-repo path)**:
+  - Raw SAM inputs are configured in `SAM_SAMPLES` and resolved from:
+    - `data/raw/Input_Data/4C/old_filtering_attempts`
+    - `data/raw/Input_Data/4C/joey_filtered_final`
+  - DSB metadata: `data/raw/Insertion_Primers_for_Locations_of_DSBs.csv`
+- **What it writes**:
+  - Main 4C outputs: `Outputs/4C_python`
+
+### Optional: combined PD + 3C + 4C notebook
+
+- **Notebook**: `notebooks/full_analysis_notebooks/PD_3C_4C_Combined_Report.ipynb`
+- **Data it reads (relative in-repo defaults)**:
+  - PD: `PD_Data` (or `WILSONTEW_PD_FOLDER`)
+  - 3C: `ThreeC_Data` (or `WILSONTEW_3C_FOLDER`)
+  - 4C summaries: `Outputs/4C_python` (or `WILSONTEW_4C_FOLDER`)
+- **What it writes**:
+  - Combined outputs: `Outputs/PD_3C_4C`
+
+## Notebook environment setup
+
+Most notebooks and `.Rmd` files in this repo are written in **R**; the 4C one-shot notebook is **Python**.
 
 For multi-language Jupyter setup (R/Python/Java/C++ and notes on VBA), see:
 
@@ -31,7 +80,9 @@ For multi-language Jupyter setup (R/Python/Java/C++ and notes on VBA), see:
    - Register the kernel: `IRkernel::installspec(user = TRUE)`
 
 3. In VS Code, install the **Jupyter** extension.
-4. Open `MD_PD_Analysis.ipynb` and select the **R / IRkernel** kernel when prompted.
+4. Open the notebook you want to run and select the matching kernel:
+   - PD / 3C / combined notebooks: **R / IRkernel**
+   - 4C one-shot notebook: **Python**
 
 Optional (Windows helper):
 
